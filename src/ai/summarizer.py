@@ -195,4 +195,29 @@ def summarize_items(
             logger.error(f"AI 摘要失败: {e}")
 
     results.sort(key=lambda x: x.get("ai_score", 0), reverse=True)
-    return results[:max_output]
+
+    # 按来源分桶（已按分数排序）
+    source_buckets: dict[str, list] = {}
+    for item in results:
+        src = item.get("source", "unknown")
+        if src not in source_buckets:
+            source_buckets[src] = []
+        source_buckets[src].append(item)
+
+    # 每个来源保底条数
+    per_source_min = max_output // len(source_buckets) if source_buckets else max_output
+
+    selected: list[dict] = []
+    leftover: list[dict] = []
+    for items in source_buckets.values():
+        selected.extend(items[:per_source_min])
+        leftover.extend(items[per_source_min:])
+
+    # 剩余名额按分数补充
+    remaining = max_output - len(selected)
+    if remaining > 0 and leftover:
+        leftover.sort(key=lambda x: x.get("ai_score", 0), reverse=True)
+        selected.extend(leftover[:remaining])
+
+    selected.sort(key=lambda x: x.get("ai_score", 0), reverse=True)
+    return selected

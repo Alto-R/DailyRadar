@@ -27,9 +27,10 @@ DailyRadar/
 ├── docker/
 │   ├── Dockerfile
 │   ├── docker-compose.yml
-│   └── entrypoint.sh
+│   ├── entrypoint.sh
+│   ├── .env.example             # 环境变量模板
+│   └── .env                     # 环境变量（不提交，从 .env.example 复制）
 ├── src/                         # Python 源码
-├── .env.example                 # 环境变量模板
 └── requirements.txt
 ```
 
@@ -46,13 +47,13 @@ DailyRadar/
 
 ---
 
-## 第一步：配置 `.env`
+## 第一步：配置 `docker/.env`
 
 ```bash
-cd DailyRadar/
+cp docker/.env.example docker/.env
 ```
 
-编辑 `.env`，至少填写以下必填项：
+编辑 `docker/.env`，至少填写以下必填项：
 
 ```dotenv
 # 必填：AI（LiteLLM 格式，兼容任意 OpenAI 兼容接口）
@@ -261,25 +262,35 @@ python -m src.main --schedule-name "晚间日报"
 
 ## 内容偏好学习
 
-服务内置基于 Claude few-shot 的偏好学习系统：每次为内容打分（1-5星）后，下次 Claude 会参考历史高分内容进行过滤。
+服务内置基于 few-shot 的偏好学习系统：在 `data/last_digest.json` 中为内容填写评分后，下次运行时 AI 会自动参考历史高分内容进行过滤。
 
-```bash
-# 进入容器为今日内容打分
-docker exec -it dailyradar python -c "
-from src.ai.feedback import save_feedback
-from src.config_loader import load_config
-config = load_config()
-save_feedback(config,
-    date_str='2026-03-02',
-    source='github',
-    title='anthropics/claude-code',
-    url='https://github.com/anthropics/claude-code',
-    score=5,
-    notes='直接相关，工程质量高'
-)
-print('已保存反馈')
-"
-```
+**工作流程：**
+
+1. 每次日报运行后，自动生成 `data/last_digest.json`，每条记录预留打分字段：
+
+   ```json
+   {
+     "date": "2026-03-02",
+     "source": "github",
+     "title": "anthropics/claude-code",
+     "url": "https://github.com/anthropics/claude-code",
+     "ai_score": 9,
+     "ai_summary": "Claude 的官方 CLI 工具...",
+     "user_score": null,
+     "user_notes": ""
+   }
+   ```
+
+2. 打开 `data/last_digest.json`，将感兴趣的条目 `user_score` 改为 1-5 的整数（`null` 表示跳过）：
+
+   ```json
+   "user_score": 5,
+   "user_notes": "工程质量高，直接相关"
+   ```
+
+3. **下次日报运行时自动应用**——服务启动时会读取文件、将已填分数写入 `feedback.db`，并清空 `user_score` 字段避免重复写入。无需任何额外操作。
+
+> `data/` 目录通过 Docker volume 挂载到宿主机，直接在宿主机编辑文件即可，无需进入容器。
 
 ---
 

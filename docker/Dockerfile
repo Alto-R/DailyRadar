@@ -4,7 +4,7 @@ WORKDIR /app
 
 # 安装 supercronic（支持 amd64 / arm64）
 ARG TARGETARCH
-ENV SUPERCRONIC_VERSION=v0.2.33
+ENV SUPERCRONIC_VERSION=v0.2.39
 
 RUN set -ex && \
     apt-get update && \
@@ -12,12 +12,12 @@ RUN set -ex && \
     case ${TARGETARCH} in \
     amd64) \
       export SUPERCRONIC_URL=https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-amd64; \
-      export SUPERCRONIC_SHA1SUM=e0f0c06ebc5627e43b25475711e694450489ab00; \
+      export SUPERCRONIC_SHA1SUM=c98bbf82c5f648aaac8708c182cc83046fe48423; \
       export SUPERCRONIC=supercronic-linux-amd64; \
       ;; \
     arm64) \
       export SUPERCRONIC_URL=https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-arm64; \
-      export SUPERCRONIC_SHA1SUM=f3b62bef5ef5e2b81ce8aef93b38898e9ffc41cc; \
+      export SUPERCRONIC_SHA1SUM=5ef4ccc3d43f12d0f6c3763758bc37cc4e5af76e; \
       export SUPERCRONIC=supercronic-linux-arm64; \
       ;; \
     *) \

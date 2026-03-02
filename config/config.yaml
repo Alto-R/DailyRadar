@@ -29,7 +29,7 @@ schedules:
   - name: "早间日报"
     cron: "0 8 * * *"           # 每天早上 8:00
     content: [schedule, todos, news]
-    sources: [github, rss]      # 早间不采集 YouTube（速度慢，节省时间）
+    sources: [github, youtube, rss]     
     subject_prefix: "早安 | DailyRadar"
 
   - name: "晚间日报"
@@ -148,7 +148,7 @@ ai:
   api_base: "https://jeniya.cn/v1"
   max_tokens: 512               # 每条摘要的最大 token 数
   min_relevance_score: 5        # 相关性过滤阈值（1-10），低于此分数不展示
-  max_items_per_digest: 15      # 每次最多展示的新闻条目数
+  max_items_per_digest: 20      # 每次最多展示的新闻条目数
   taste_examples_limit: 8       # 从历史反馈中取多少条高分示例作为 few-shot
 
 

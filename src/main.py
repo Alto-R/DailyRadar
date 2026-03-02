@@ -35,6 +35,9 @@ def run(schedule_name: str, config: dict, dry_run: bool = False):
         config:        AppConfig dict
         dry_run:       True 时打印预览，不发送通知
     """
+    # ── 读取上次 JSON 中用户填写的分数，写入 feedback.db ─────
+    _apply_pending_feedback(config)
+
     # ── 找到匹配的 schedule entry ─────────────────────────────
     schedule = next(
         (s for s in config.get("schedules", []) if s.get("name") == schedule_name),
@@ -141,7 +144,90 @@ def run(schedule_name: str, config: dict, dry_run: bool = False):
         from src.notifications.dispatcher import dispatch
         dispatch(payload, config)
 
+    # ── Section 5: 保存新闻条目供反馈打分使用 ────────────────
+    if news_items:
+        _save_last_digest(news_items, today, config)
+
     logger.info("✅ 完成")
+
+
+def _apply_pending_feedback(config: dict):
+    """
+    读取 data/last_digest.json，将用户已填写 user_score（1-5）的条目
+    写入 feedback.db，然后将这些条目的 user_score 清空（避免重复写入）。
+    """
+    import json
+    from pathlib import Path
+    from src.ai.feedback import save_feedback, init_db
+
+    data_dir = Path(config.get("storage", {}).get("data_dir", "/app/data"))
+    path = data_dir / "last_digest.json"
+    if not path.exists():
+        return
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            records = json.load(f)
+    except Exception as e:
+        logger.warning(f"读取 last_digest.json 失败: {e}")
+        return
+
+    init_db(config)
+    applied = 0
+    for r in records:
+        score = r.get("user_score")
+        if score is not None and isinstance(score, int) and 1 <= score <= 5:
+            save_feedback(
+                config,
+                date_str=r.get("date", ""),
+                source=r.get("source", ""),
+                title=r.get("title", ""),
+                url=r.get("url", ""),
+                score=score,
+                ai_summary=r.get("ai_summary", ""),
+                notes=r.get("user_notes", ""),
+            )
+            r["user_score"] = None   # 清空，避免下次重复写入
+            r["user_notes"] = ""
+            applied += 1
+
+    if applied:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
+        logger.info(f"✨ 已将 {applied} 条用户反馈写入偏好数据库")
+
+
+def _save_last_digest(news_items: list[dict], today: date, config: dict):
+    """
+    将本次新闻条目保存到 data/last_digest.json。
+    每条记录预留 user_score / user_notes 字段（默认 null / ""），
+    用户可直接编辑此文件填写分数，下次运行时自动写入偏好数据库。
+    """
+    import json
+    from pathlib import Path
+
+    data_dir = Path(config.get("storage", {}).get("data_dir", "/app/data"))
+    data_dir.mkdir(parents=True, exist_ok=True)
+    out_path = data_dir / "last_digest.json"
+
+    records = []
+    for item in news_items:
+        records.append({
+            "date":       str(today),
+            "source":     item.get("source", ""),
+            "title":      item.get("title", ""),
+            "url":        item.get("url", ""),
+            "ai_score":   item.get("ai_score"),
+            "ai_summary": item.get("ai_summary", ""),
+            # ── 在此填写你的评分后，下次运行时自动生效 ──────────
+            "user_score": None,   # 填 1-5 整数，null 表示跳过
+            "user_notes": "",     # 备注（可留空）
+        })
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
+
+    logger.info(f"📋 已保存 {len(records)} 条内容到 {out_path}（填写 user_score 后下次运行自动学习偏好）")
 
 
 def _print_dry_run(payload: dict):
