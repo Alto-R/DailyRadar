@@ -6,6 +6,7 @@ summarizer.py - AI 摘要与品味过滤引擎
   - 用传入的 config dict 替换 import config 模块
   - 使用 LiteLLM 替代 Anthropic SDK，支持任意 OpenAI 兼容接口
   - API 配置从 AI_API_KEY / AI_MODEL / AI_API_BASE 环境变量读取
+  - 两阶段处理：第一阶段按标题批量筛选（1次调用），第二阶段仅对入选条目做完整摘要
 """
 
 import json
@@ -24,14 +25,14 @@ litellm.suppress_debug_info = True
 logger = logging.getLogger(__name__)
 
 
-def _build_system_prompt(taste_examples: list[dict], language: str = "zh") -> str:
+def _build_system_prompt(taste_examples: list[dict], language: str = "zh", focus: str = "") -> str:
     lang_label = "中文" if language == "zh" else "English"
     base = f"""你是一个专业的内容策展助手，负责为用户筛选和摘要每日信息流。
 
 用户的偏好语言是：{lang_label}
 
 你的任务是对每一条内容进行：
-1. **相关性评分**（1-10 分）：结合用户历史喜好判断这条内容对用户的价值
+1. **相关性评分**（1-10 分）：结合用户今日关注方向和历史喜好判断这条内容对用户的价值
 2. **生成摘要**：用 2-4 句话提炼核心价值，说明"为什么值得关注"
 
 评分标准：
@@ -40,6 +41,19 @@ def _build_system_prompt(taste_examples: list[dict], language: str = "zh") -> st
 - 5-6：一般，勉强值得一看
 - 1-4：不相关或质量低，不推荐
 """
+    if focus:
+        base += f"""
+---
+## 今日筛选方向
+
+用户今天的关注重点是：**{focus}**
+
+评分时请以此方向为首要参考：
+- 与方向高度相关的内容优先给高分，即使历史上没有类似偏好
+- 与方向完全无关的内容适当降分，即使内容本身质量不错
+---
+"""
+
     if taste_examples:
         base += "\n\n---\n## 用户历史高分内容（品味参考）\n\n"
         base += "以下是用户过去打高分（4-5/5）的内容，请参考这些来判断用户的偏好：\n\n"
@@ -67,6 +81,8 @@ def _make_item_text(item: dict) -> str:
     if source == "github":
         if item.get("stars"):
             lines.append(f"**Stars**: {item['stars']:,}")
+        if item.get("stars_gained"):
+            lines.append(f"**近期新增**: {item['stars_gained']}")
         if item.get("language"):
             lines.append(f"**语言**: {item['language']}")
         if item.get("description"):
@@ -77,6 +93,8 @@ def _make_item_text(item: dict) -> str:
     elif source == "youtube":
         if item.get("channel"):
             lines.append(f"**频道**: {item['channel']}")
+        if item.get("view_count"):
+            lines.append(f"**播放量**: {item['view_count']:,}")
         if item.get("description"):
             lines.append(f"**视频描述**: {item['description']}")
         if item.get("transcript_snippet"):
@@ -91,20 +109,94 @@ def _make_item_text(item: dict) -> str:
     return "\n".join(lines)
 
 
+def _batch_select_by_titles(
+    items: list[dict],
+    focus: str,
+    taste_examples: list[dict],
+    call_kwargs: dict,
+    language: str,
+    max_keep: int,
+) -> list[int]:
+    """
+    第一阶段：仅凭标题+简介，一次 API 调用批量筛选值得深读的条目。
+
+    Returns:
+        值得保留的条目下标列表（0-based）。失败时回退为全量下标。
+    """
+    lang_label = "中文" if language == "zh" else "English"
+
+    items_text = ""
+    for i, item in enumerate(items):
+        source = item.get("source", "unknown").upper()
+        title = item.get("title", "")
+        desc = (item.get("description") or item.get("content_snippet") or "")[:80]
+        items_text += f"[{i}] [{source}] {title}"
+        if desc:
+            items_text += f"  —  {desc}"
+        items_text += "\n"
+
+    focus_line = f"用户今日关注方向：**{focus}**\n\n" if focus else ""
+
+    taste_hint = ""
+    if taste_examples:
+        taste_hint = "用户历史偏好（高分内容样例）：\n"
+        for ex in taste_examples[:3]:
+            taste_hint += f"- {ex['title']}\n"
+        taste_hint += "\n"
+
+    user_message = f"""{focus_line}{taste_hint}以下是 {len(items)} 条待筛选内容（格式：[序号] [来源] 标题  —  简介）：
+
+{items_text}
+请从中选出最多 {max_keep} 条最值得深度阅读的内容。
+
+严格按照以下 JSON 格式返回（不要包含其他文字）：
+{{"selected": [0, 3, 7]}}
+
+selected 数组填入值得保留的条目序号（0-based 整数）。"""
+
+    try:
+        # 标题筛选只需要短回复，压缩 token 用量
+        filter_kwargs = {**call_kwargs, "max_tokens": 256}
+        response = litellm.completion(
+            messages=[
+                {"role": "system", "content": f"你是内容筛选助手，请用{lang_label}思考，只输出 JSON。"},
+                {"role": "user", "content": user_message},
+            ],
+            **filter_kwargs,
+        )
+        raw_text = response.choices[0].message.content.strip()
+        json_match = re.search(r"\{[\s\S]*\}", raw_text)
+        if json_match:
+            parsed = json.loads(json_match.group())
+            selected = parsed.get("selected", [])
+            valid = [i for i in selected if isinstance(i, int) and 0 <= i < len(items)]
+            logger.info(f"  第一阶段筛选：{len(items)} → {len(valid)} 条入围")
+            return valid[:max_keep]
+    except Exception as e:
+        logger.warning(f"标题批量筛选失败，回退到全量处理: {e}")
+
+    return list(range(len(items)))
+
+
 def summarize_items(
     raw_items: list[dict],
     config: dict,
     min_score: Optional[int] = None,
     max_output: Optional[int] = None,
+    focus: str = "",
 ) -> list[dict]:
     """
-    对原始采集内容批量打分+摘要。
+    两阶段处理：
+      阶段一：AI 仅看标题+简介，一次调用批量筛选入围条目
+              （RSS 在此阶段会多条目进池，之后按 per_feed_limit 封顶）
+      阶段二：仅对入围条目逐条调用 AI，生成完整评分+摘要
 
     Args:
         raw_items: 来自各 collector 的原始数据列表
         config:    AppConfig dict
         min_score: 低于此分数的条目被过滤（默认读 config）
         max_output: 最多返回条目数（默认读 config）
+        focus:     本次筛选方向（来自 schedule.focus），传给 AI 做相关度评分
 
     Returns:
         过滤并排序后的列表，每项新增：
@@ -116,9 +208,11 @@ def summarize_items(
         return []
 
     ai_cfg = config.get("ai", {})
+    rss_cfg = config.get("collectors", {}).get("rss", {})
     min_score = min_score or ai_cfg.get("min_relevance_score", 5)
     max_output = max_output or ai_cfg.get("max_items_per_digest", 15)
-    # 优先 env var，其次 config.yaml
+    # RSS 每 feed 最多进入摘要阶段的条数
+    rss_per_feed_limit: int = rss_cfg.get("max_items_per_feed", 3)
     model     = os.environ.get("AI_MODEL")     or ai_cfg.get("model", "openai/gpt-4o-mini")
     api_base  = os.environ.get("AI_API_BASE")  or ai_cfg.get("api_base") or None
     max_tokens = ai_cfg.get("max_tokens", 512)
@@ -130,7 +224,6 @@ def summarize_items(
         logger.error("AI_API_KEY 未配置，跳过 AI 摘要")
         return raw_items[:max_output]
 
-    # 通过 LiteLLM 统一调用，兼容 OpenAI / Claude / Gemini / 本地模型等
     call_kwargs: dict = dict(
         model=model,
         api_key=api_key,
@@ -140,12 +233,54 @@ def summarize_items(
         call_kwargs["api_base"] = api_base
 
     taste_examples = load_taste_examples(config, limit=taste_limit)
-    system_prompt = _build_system_prompt(taste_examples, language)
 
+    # ── 阶段一：标题批量筛选 ──────────────────────────────────
+    # 预留 max_output 的 2 倍进入第二阶段，给评分留余量
+    max_keep = min(max_output * 2, len(raw_items))
+    selected_indices = _batch_select_by_titles(
+        raw_items, focus, taste_examples, call_kwargs, language, max_keep
+    )
+    candidates = [raw_items[i] for i in selected_indices]
+
+    # ── 阶段一后：为 YouTube 入选视频补充字幕（精读素材）────────
+    yt_candidates = [item for item in candidates if item.get("source") == "youtube"]
+    if yt_candidates:
+        logger.info(f"  拉取 YouTube 字幕（{len(yt_candidates)} 个视频）...")
+        try:
+            from src.collectors.youtube_collector import _get_transcript
+            for item in yt_candidates:
+                video_id = item.get("video_id", "")
+                if not video_id:
+                    url = item.get("url", "")
+                    if "v=" in url:
+                        video_id = url.split("v=")[-1].split("&")[0]
+                if video_id:
+                    item["transcript_snippet"] = _get_transcript(video_id)
+        except Exception as e:
+            logger.warning(f"YouTube 字幕补充失败: {e}")
+
+    # ── 阶段一后：RSS 每 feed 封顶 ────────────────────────────
+    # RSS 初始多抓了很多条（max_items_per_feed_initial），这里把每个 feed 的候选
+    # 限制到 rss_per_feed_limit 条，防止单个 feed 占满摘要名额
+    feed_counts: dict[str, int] = {}
+    capped: list[dict] = []
+    for item in candidates:
+        if item.get("source") == "rss":
+            feed_key = item.get("feed_title", item.get("url", "unknown"))
+            feed_counts[feed_key] = feed_counts.get(feed_key, 0) + 1
+            if feed_counts[feed_key] > rss_per_feed_limit:
+                continue
+        capped.append(item)
+    if len(capped) < len(candidates):
+        logger.info(f"  RSS per-feed 封顶：{len(candidates)} → {len(capped)} 条进入摘要")
+    candidates = capped
+
+    # ── 阶段二：逐条完整评分+摘要 ────────────────────────────
+    system_prompt = _build_system_prompt(taste_examples, language, focus=focus)
     results: list[dict] = []
 
-    for i, item in enumerate(raw_items):
-        logger.info(f"  摘要进度: {i+1}/{len(raw_items)} - {item.get('title', '')[:50]}")
+    for i, item in enumerate(candidates):
+        logger.info(f"  摘要进度: {i+1}/{len(candidates)} - {item.get('title', '')[:50]}")
         item_text = _make_item_text(item)
 
         user_message = f"""请对以下内容进行评估，并以 JSON 格式返回结果：
@@ -196,7 +331,7 @@ def summarize_items(
 
     results.sort(key=lambda x: x.get("ai_score", 0), reverse=True)
 
-    # 按来源分桶（已按分数排序）
+    # 按来源分桶，每源保底
     source_buckets: dict[str, list] = {}
     for item in results:
         src = item.get("source", "unknown")
@@ -204,7 +339,6 @@ def summarize_items(
             source_buckets[src] = []
         source_buckets[src].append(item)
 
-    # 每个来源保底条数
     per_source_min = max_output // len(source_buckets) if source_buckets else max_output
 
     selected: list[dict] = []
@@ -213,7 +347,6 @@ def summarize_items(
         selected.extend(items[:per_source_min])
         leftover.extend(items[per_source_min:])
 
-    # 剩余名额按分数补充
     remaining = max_output - len(selected)
     if remaining > 0 and leftover:
         leftover.sort(key=lambda x: x.get("ai_score", 0), reverse=True)

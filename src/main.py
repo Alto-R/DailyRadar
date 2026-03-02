@@ -55,11 +55,12 @@ def run(schedule_name: str, config: dict, dry_run: bool = False):
     content_blocks = schedule.get("content", ["news"])
     sources        = schedule.get("sources", ["github", "youtube", "rss"])
     subject_prefix = schedule.get("subject_prefix", "DailyRadar")
+    focus          = schedule.get("focus", "")
     tz = ZoneInfo(config.get("app", {}).get("timezone", "Asia/Shanghai"))
     now = datetime.now(tz)
     today = now.date()
 
-    logger.info(f"▶ Schedule: '{schedule['name']}' | content={content_blocks} | sources={sources}")
+    logger.info(f"▶ Schedule: '{schedule['name']}' | content={content_blocks} | sources={sources} | focus={focus!r}")
 
     # ── Section 1: 个人助手 ───────────────────────────────────
     schedule_entries = None
@@ -101,7 +102,7 @@ def run(schedule_name: str, config: dict, dry_run: bool = False):
             logger.info("📺 抓取 YouTube...")
             try:
                 from src.collectors.youtube_collector import collect_youtube
-                items = collect_youtube(config)
+                items = collect_youtube(config, focus=focus)
                 raw_items.extend(items)
                 logger.info(f"   YouTube: {len(items)} 个视频")
             except Exception as e:
@@ -122,13 +123,14 @@ def run(schedule_name: str, config: dict, dry_run: bool = False):
         if raw_items:
             logger.info("🤖 AI 摘要中...")
             from src.ai.summarizer import summarize_items
-            news_items = summarize_items(raw_items, config)
+            news_items = summarize_items(raw_items, config, focus=focus)
             logger.info(f"   筛选后: {len(news_items)} 条")
 
     # ── Section 3: 组装 Payload ──────────────────────────────
     payload = {
         "schedule_name":    schedule["name"],
         "subject_prefix":   subject_prefix,
+        "focus":            focus,
         "date":             today,
         "datetime":         now,
         "schedule_entries": schedule_entries,

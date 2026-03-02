@@ -29,13 +29,15 @@ schedules:
   - name: "早间日报"
     cron: "0 10 * * *"           # 每天早上 10:00
     content: [schedule, todos, news]
-    sources: [github, youtube, rss]     
+    sources: [github, youtube, rss]
+    focus: "AI Agent、大模型工程化与开源生态最新进展"   # AI 筛选方向
     subject_prefix: "早安 | DailyRadar"
 
   - name: "晚间日报"
     cron: "0 21 * * *"          # 每天晚上 9:00
     content: [news]
     sources: [github, youtube, rss]
+    focus: "今日科技与 AI 行业动态、产品发布与研究突破"  # AI 筛选方向
     subject_prefix: "晚间精选 | DailyRadar"
 
   # 更多示例（取消注释即可启用）：
@@ -44,12 +46,14 @@ schedules:
   #   cron: "0 12 * * *"
   #   content: [news]
   #   sources: [rss]
+  #   focus: "今日头条科技快讯"
   #   subject_prefix: "午间快讯 | DailyRadar"
   #
   # - name: "周末深度"
   #   cron: "0 10 * * 6"        # 每周六早上 10:00
   #   content: [news]
   #   sources: [github, youtube, rss]
+  #   focus: "深度技术文章、开源项目与学术前沿"
   #   subject_prefix: "周末精选 | DailyRadar"
 
 
@@ -61,17 +65,11 @@ collectors:
   # ── GitHub ────────────────────────────────────────────────────
   github:
     enabled: true
-    # 要监控的 GitHub Topics 关键词
-    topics:
-      - "llm"
-      - "ai-agent"
-      - "machine-learning"
-      - "python"
-      - "claude"
-      - "openai"
-    min_stars: 50               # 只抓取 star 数 ≥ 此值的仓库
-    max_repos: 12               # 每次最多抓取的仓库数
-    days_lookback: 7            # 只抓取最近 N 天有更新的仓库
+    # 爬取 github.com/trending，由 AI 按 focus 方向过滤，无需手动维护关键词
+    trending_since: "daily"      # daily（今日）/ weekly（本周）/ monthly（本月）
+    # 可选：限定编程语言，留空则抓所有语言的 Trending
+    trending_languages: []
+    max_repos: 25                # 最多抓取的仓库数
 
   # ── YouTube ──────────────────────────────────────────────────
   youtube:
@@ -81,21 +79,20 @@ collectors:
       - "UCnUYZLuoy1rq1aVMwx4aTzw"   # Lex Fridman Podcast
       - "UCcefcZRL2oaA_uBNeo5UOWg"   # Y Combinator
       - "UC9cn0TuPq4dnbTY-CBsm8XA"   # a16z
-    # 关键词搜索
-    keywords:
-      - "Sam Altman interview"
-      - "Andrej Karpathy lecture"
-      - "Dario Amodei interview"
-      - "Demis Hassabis interview"
-      - "Jensen Huang interview"
-    max_results_per_keyword: 2  # 每个关键词最多抓取的视频数
-    days_lookback: 14           # 只抓取最近 N 天的视频
+    max_results_per_channel: 3  # 每个频道最终保留的视频数（按热度排序）
+    days_lookback: 2            # 只抓取最近 N 天的视频
+    sort_by: "views"            # 排序方式："views"（热度）/ "date"（最新）
+    # ── 关键词搜索（其他频道）────────────────────────────────
+    # AI 根据当次 schedule 的 focus 自动推导搜索词，覆盖 channel_ids 之外的内容
+    enable_keyword_search: true  # 改为 true 开启；会额外消耗一次 AI 调用 + YouTube Search 配额
+    max_search_results: 3        # 每个关键词最多取多少条视频（按热度排序）
 
   # ── RSS ──────────────────────────────────────────────────────
   rss:
     enabled: true
     days_lookback: 2            # 只抓取最近 N 天的文章
-    max_items_per_feed: 3       # 每个 RSS 源最多抓取的文章数
+    max_items_per_feed_initial: 10  # 每 feed 初始抓取的标题数（供 AI 批量筛选）
+    max_items_per_feed: 3           # 每 feed 最终进入摘要阶段的文章数
     feeds:
       # 科技资讯
       - id: "hacker-news"
@@ -146,7 +143,7 @@ ai:
   model: "openai/gemini-3.1-pro-preview"
   # 自定义 API 端点（环境变量 AI_API_BASE 优先，使用官方接口时留空）
   api_base: ""
-  max_tokens: 512               # 每条摘要的最大 token 数
+  max_tokens: 2048              # 每条摘要的最大 token 数
   min_relevance_score: 5        # 相关性过滤阈值（1-10），低于此分数不展示
   max_items_per_digest: 20      # 每次最多展示的新闻条目数
   taste_examples_limit: 8       # 从历史反馈中取多少条高分示例作为 few-shot

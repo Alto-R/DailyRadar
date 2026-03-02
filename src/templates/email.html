@@ -46,7 +46,25 @@
     align-items: center;
     gap: 6px;
   }
-  .section-title.schedule { border-color: #0ea5e9; color: #0369a1; }
+  .section-title.focus    { border-color: #8b5cf6; color: #6d28d9; }
+
+  /* ── 筛选方向 ── */
+  .focus-box {
+    background: #f5f3ff;
+    border-left: 4px solid #8b5cf6;
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 14px;
+    color: #4c1d95;
+  }
+  .focus-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #7c3aed;
+    margin-bottom: 4px;
+  }
   .section-title.todos    { border-color: #f59e0b; color: #b45309; }
   .section-title.news     { border-color: #10b981; color: #047857; }
 
@@ -191,6 +209,13 @@
 <!-- 今日精选 -->
 <div class="card">
   <div class="section-title news">📰 今日精选 &nbsp;<span style="font-weight:400;font-size:13px;color:#6b7280">{{ news_items | length }} 条</span></div>
+  {% if focus %}
+  <div class="focus-box">
+    <div class="focus-label">🎯 AI 筛选方向</div>
+    {{ focus }}
+  </div>
+  <div style="margin-bottom:12px"></div>
+  {% endif %}
   {% for item in news_items %}
   <div class="news-item">
     <div class="news-meta">
@@ -207,6 +232,9 @@
       {% endif %}
       {% if item.source == 'youtube' and item.channel %}
       <span style="font-size:12px;color:#6b7280">{{ item.channel }}</span>
+      {% endif %}
+      {% if item.source == 'youtube' and item.view_count %}
+      <span style="font-size:12px;color:#6b7280">▶ {{ '{:,}'.format(item.view_count) }} 次</span>
       {% endif %}
     </div>
     <p class="news-title"><a href="{{ item.url }}" target="_blank">{{ item.title }}</a></p>

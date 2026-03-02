@@ -1,8 +1,8 @@
 """
 rss_collector.py - RSS 订阅抓取器
 ====================================
-改编自 obsidian-daily-digest/collectors/rss_collector.py
-主要改动：用传入的 config dict 替换 import config 模块
+v2: 两阶段抓取——每 feed 先多抓（max_items_per_feed_initial）条标题，
+    由 AI 批量筛选后再按 max_items_per_feed 上限进摘要阶段。
 """
 
 import logging
@@ -114,6 +114,9 @@ def collect_rss(config: dict, max_total: Optional[int] = None) -> list[dict]:
     """
     抓取所有配置的 RSS 源。
 
+    每个 feed 先抓 max_items_per_feed_initial 条（默认 20）用于 AI 标题批量筛选；
+    筛选后由 summarizer 按 max_items_per_feed（默认 3）做每 feed 上限。
+
     Args:
         config: AppConfig dict（来自 config_loader.load_config()）
     """
@@ -122,7 +125,8 @@ def collect_rss(config: dict, max_total: Optional[int] = None) -> list[dict]:
         return []
 
     days_back = rss_cfg.get("days_lookback", 2)
-    max_per_feed = rss_cfg.get("max_items_per_feed", 3)
+    # 初始多抓，供 AI 批量筛选
+    max_per_feed_initial = rss_cfg.get("max_items_per_feed_initial", 20)
     feeds = rss_cfg.get("feeds", [])
 
     collected: list[dict] = []
@@ -132,7 +136,7 @@ def collect_rss(config: dict, max_total: Optional[int] = None) -> list[dict]:
         feed_url = feed.get("url", "") if isinstance(feed, dict) else feed
         if not feed_url:
             continue
-        items = _fetch_feed(feed_url, days_back, max_per_feed)
+        items = _fetch_feed(feed_url, days_back, max_per_feed_initial)
         for item in items:
             if item["url"] not in seen_urls:
                 seen_urls.add(item["url"])
@@ -141,5 +145,5 @@ def collect_rss(config: dict, max_total: Optional[int] = None) -> list[dict]:
     if max_total:
         collected = collected[:max_total]
 
-    logger.info(f"RSS: 共收集 {len(collected)} 篇文章")
+    logger.info(f"RSS: 共收集 {len(collected)} 篇文章（每 feed 最多 {max_per_feed_initial} 条标题入池）")
     return collected
