@@ -415,4 +415,4 @@ Set `AI_BACKEND=claude-cli` or `AI_BACKEND=codex-cli` in `.env` to use your loca
 
 ## 📚 Credits
 
-Inspired by [TrendRadar](https://github.com/sansan0/TrendRadar) and [obsidian-daily-digest](https://github.com/iamseeley/obsidian-daily-digest)
+Inspired by [TrendRadar](https://github.com/sansan0/TrendRadar) and [obsidian-daily-digest](https://github.com/Lantern567/obsidian-daily-digest.git)

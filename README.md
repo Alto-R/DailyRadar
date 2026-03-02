@@ -417,4 +417,4 @@ QQ/163 邮箱需使用「授权码」而非登录密码。QQ 邮箱：设置 →
 
 ## 📚 致谢
 
-感谢 [TrendRadar](https://github.com/sansan0/TrendRadar) 和 [obsidian-daily-digest](https://github.com/iamseeley/obsidian-daily-digest) 的启发
+感谢 [TrendRadar](https://github.com/sansan0/TrendRadar) 和 [obsidian-daily-digest](https://github.com/Lantern567/obsidian-daily-digest.git) 的启发
