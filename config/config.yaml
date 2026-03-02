@@ -171,6 +171,10 @@ ai:
   max_tokens: 2048              # 每条摘要的最大 token 数
   min_relevance_score: 5        # 相关性过滤阈值（1-10），低于此分数不展示
   max_items_per_digest: 20      # 每次最多展示的新闻条目数
+  # 来源保底：在候选池和最终输出阶段双重补齐，尽量保证以下最小数量
+  min_items_per_source:
+    github: 5
+    youtube: 2
   taste_examples_limit: 8       # 从历史反馈中取多少条高分示例作为 few-shot
 
 

@@ -37,6 +37,7 @@ A self-hosted personal AI digest service — aggregates GitHub / YouTube / RSS, 
 - **Three source types**: GitHub trending repos / YouTube curated videos / RSS feeds — mix and match
 - **Focus-based filtering**: each schedule has a `focus` field; the AI prioritizes content that matches it
 - **Two-stage AI pipeline**: batch title filtering (low token cost) → deep read scoring (only for selected items)
+- **Per-source minimums**: configurable minimum item counts per source (default GitHub≥5, YouTube≥2) to reduce source imbalance
 - **YouTube dual-track**: subscribed channels ranked by views + AI auto-generates search keywords from `focus` to discover other channels
 - **Preference learning**: rate items to teach the AI your taste — recommendations improve over time
 - **Personal assistant**: morning schedule reminder + TODO due-date checker (overdue / today / upcoming)
@@ -250,12 +251,18 @@ Set `user_score` to an integer 1–5 for items you care about. **On the next run
 
 ```yaml
 ai:
-  model: "openai/gpt-4o"       # LiteLLM format; env AI_MODEL takes priority
+  model: "openai/gpt-5.2"       # LiteLLM format; env AI_MODEL takes priority
   api_base: ""                  # Custom endpoint; env AI_API_BASE takes priority
   min_relevance_score: 5        # Filter items below this score (1–10)
   max_items_per_digest: 20      # Max items shown per digest
+  min_items_per_source:         # Optional per-source minimums
+    github: 5
+    youtube: 2
   max_tokens: 2048              # Max tokens per summary
 ```
+
+`min_items_per_source` is enforced in both stages (title selection + final output).
+If high-score items are insufficient, lower-score candidates from that source may be used as fallback. If collection itself returns too few items, the final count can still be lower than the target.
 
 ### GitHub collector
 
@@ -283,10 +290,10 @@ collectors:
       - "UCnUYZLuoy1rq1aVMwx4aTzw"   # Lex Fridman Podcast
       - "UCcefcZRL2oaA_uBNeo5UOWg"   # Y Combinator
     max_results_per_channel: 3   # Videos kept per channel (sorted by views)
-    days_lookback: 2             # Only fetch videos from the last N days
+    days_lookback: 7             # Only fetch videos from the last N days
     sort_by: "views"             # "views" (popularity) / "date" (newest first)
     # ── Track 2: AI keyword search (other channels) ───────────
-    enable_keyword_search: false # Set true to enable; costs one extra AI call
+    enable_keyword_search: true  # Adds one AI call + YouTube Search API quota
     max_search_results: 3        # Max videos per keyword (sorted by views)
     search_days_lookback: 3      # Time window for keyword search (independent of channel window)
 ```
@@ -341,6 +348,10 @@ Enable YouTube Data API v3 in Google Cloud Console, and make sure the API key ha
 ### Q: Enabling `enable_keyword_search` increases my YouTube API quota usage
 
 Keyword search makes one extra AI call (to generate keywords) plus several YouTube Search API requests. The YouTube Data API v3 free tier is 10,000 units/day; each Search call costs ~100 units while channel playlist fetches cost ~1 unit. Keep `max_search_results` low to stay within quota.
+
+### Q: Why can final output still be below `github: 5` / `youtube: 2`?
+
+Minimums can only be enforced when candidates exist. If a source returns too few items during collection (for example, no recent YouTube uploads within `days_lookback`, or temporary API failures), final counts may still be below target. Increase `days_lookback` / `search_days_lookback`, add more `channel_ids`, and check runtime logs for API errors.
 
 ### Q: How to add more RSS feeds
 

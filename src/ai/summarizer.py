@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+from collections import Counter
 from typing import Optional
 
 import litellm
@@ -177,6 +178,193 @@ selected 数组填入值得保留的条目序号（0-based 整数）。"""
     return list(range(len(items)))
 
 
+def _normalize_source_minimums(raw_cfg) -> dict[str, int]:
+    """
+    解析来源保底配置。
+
+    默认保底：
+      - github >= 5
+      - youtube >= 2
+
+    配置方式（config.ai.min_items_per_source）支持覆盖与关闭：
+      min_items_per_source:
+        github: 5
+        youtube: 2
+      # 设置为 0 或负数可关闭某来源保底
+    """
+    minimums: dict[str, int] = {"github": 5, "youtube": 2}
+    if not isinstance(raw_cfg, dict):
+        return minimums
+
+    for source, value in raw_cfg.items():
+        src = str(source).strip().lower()
+        if not src:
+            continue
+        try:
+            n = int(value)
+        except (TypeError, ValueError):
+            continue
+        if n <= 0:
+            minimums.pop(src, None)
+        else:
+            minimums[src] = n
+    return minimums
+
+
+def _ensure_source_candidates(
+    raw_items: list[dict],
+    selected_indices: list[int],
+    source_minimums: dict[str, int],
+    max_keep: int,
+) -> list[int]:
+    """
+    在阶段一候选池中补齐来源保底，避免某来源在标题筛选阶段被完全筛掉。
+    """
+    if not source_minimums:
+        return selected_indices[:max_keep]
+
+    selected: list[int] = []
+    seen: set[int] = set()
+    for idx in selected_indices:
+        if isinstance(idx, int) and 0 <= idx < len(raw_items) and idx not in seen:
+            selected.append(idx)
+            seen.add(idx)
+
+    added_counts: dict[str, int] = {}
+    for source, minimum in source_minimums.items():
+        current = sum(1 for idx in selected if raw_items[idx].get("source", "") == source)
+        need = max(0, minimum - current)
+        if need == 0:
+            continue
+        for idx, item in enumerate(raw_items):
+            if need == 0:
+                break
+            if idx in seen:
+                continue
+            if item.get("source", "") != source:
+                continue
+            selected.append(idx)
+            seen.add(idx)
+            need -= 1
+            added_counts[source] = added_counts.get(source, 0) + 1
+
+    if added_counts:
+        logger.info(f"  阶段一补齐来源候选: {added_counts}")
+
+    if len(selected) <= max_keep:
+        return selected
+
+    # 超出 max_keep 时，优先保留来源保底所需条目，再按原顺序补齐其余条目
+    protected: list[int] = []
+    protected_counts: dict[str, int] = {}
+    for idx in selected:
+        src = raw_items[idx].get("source", "")
+        limit = source_minimums.get(src, 0)
+        if limit > 0 and protected_counts.get(src, 0) < limit:
+            protected.append(idx)
+            protected_counts[src] = protected_counts.get(src, 0) + 1
+
+    if len(protected) >= max_keep:
+        trimmed = protected[:max_keep]
+    else:
+        protected_set = set(protected)
+        trimmed = list(protected)
+        for idx in selected:
+            if len(trimmed) >= max_keep:
+                break
+            if idx in protected_set:
+                continue
+            trimmed.append(idx)
+
+    logger.info(f"  阶段一候选裁剪：{len(selected)} → {len(trimmed)} 条")
+    return trimmed
+
+
+def _item_key(item: dict) -> str:
+    return item.get("url") or f"{item.get('source', 'unknown')}::{item.get('title', '')}"
+
+
+def _enforce_source_minimums(
+    selected: list[dict],
+    high_score_items: list[dict],
+    low_score_items: list[dict],
+    source_minimums: dict[str, int],
+    max_output: int,
+) -> list[dict]:
+    """
+    在最终输出阶段执行来源保底：
+      1) 优先使用高分条目补齐
+      2) 不足时用低分条目兜底
+    """
+    if not source_minimums:
+        return selected[:max_output]
+
+    result = list(selected)
+    used_keys = {_item_key(item) for item in result}
+
+    pools: dict[str, list[dict]] = {}
+    for item in high_score_items + low_score_items:
+        src = item.get("source", "")
+        if src not in source_minimums:
+            continue
+        pools.setdefault(src, []).append(item)
+
+    for items in pools.values():
+        items.sort(key=lambda x: x.get("ai_score", 0), reverse=True)
+
+    supplemented: dict[str, int] = {}
+
+    for source, minimum in source_minimums.items():
+        if minimum <= 0:
+            continue
+        pool = pools.get(source, [])
+        pool_idx = 0
+
+        while sum(1 for item in result if item.get("source", "") == source) < minimum:
+            if pool_idx >= len(pool):
+                break
+
+            candidate = pool[pool_idx]
+            pool_idx += 1
+            key = _item_key(candidate)
+            if key in used_keys:
+                continue
+
+            if len(result) < max_output:
+                result.append(candidate)
+                used_keys.add(key)
+                supplemented[source] = supplemented.get(source, 0) + 1
+                continue
+
+            # 已满时，尝试替换掉“可被挤出的低分项”
+            counts = Counter(item.get("source", "") for item in result)
+            evict_idx = None
+            evict_score = None
+            for idx, existing in enumerate(result):
+                existing_src = existing.get("source", "")
+                if counts[existing_src] <= source_minimums.get(existing_src, 0):
+                    continue
+                score = existing.get("ai_score", 0)
+                if evict_idx is None or score < evict_score:
+                    evict_idx = idx
+                    evict_score = score
+
+            if evict_idx is None:
+                break
+
+            removed = result.pop(evict_idx)
+            used_keys.discard(_item_key(removed))
+            result.append(candidate)
+            used_keys.add(key)
+            supplemented[source] = supplemented.get(source, 0) + 1
+
+    if supplemented:
+        logger.info(f"  最终来源保底补齐: {supplemented}")
+
+    result.sort(key=lambda x: x.get("ai_score", 0), reverse=True)
+    return result[:max_output]
+
+
 def summarize_items(
     raw_items: list[dict],
     config: dict,
@@ -216,6 +404,7 @@ def summarize_items(
     api_base  = os.environ.get("AI_API_BASE")  or ai_cfg.get("api_base") or None
     max_tokens = ai_cfg.get("max_tokens", 512)
     taste_limit = ai_cfg.get("taste_examples_limit", 8)
+    source_minimums = _normalize_source_minimums(ai_cfg.get("min_items_per_source"))
     language = config.get("app", {}).get("language", "zh")
 
     api_key = os.environ.get("AI_API_KEY", "")
@@ -238,6 +427,9 @@ def summarize_items(
     max_keep = min(max_output * 2, len(raw_items))
     selected_indices = _batch_select_by_titles(
         raw_items, focus, taste_examples, call_kwargs, language, max_keep
+    )
+    selected_indices = _ensure_source_candidates(
+        raw_items, selected_indices, source_minimums, max_keep
     )
     candidates = [raw_items[i] for i in selected_indices]
 
@@ -277,6 +469,7 @@ def summarize_items(
     # ── 阶段二：逐条完整评分+摘要 ────────────────────────────
     system_prompt = _build_system_prompt(taste_examples, language, focus=focus)
     results: list[dict] = []
+    low_score_pool: list[dict] = []
 
     for i, item in enumerate(candidates):
         logger.info(f"  摘要进度: {i+1}/{len(candidates)} - {item.get('title', '')[:50]}")
@@ -313,14 +506,16 @@ def summarize_items(
             summary = parsed.get("summary", "")
             reason = parsed.get("reason", "")
 
-            if score < min_score:
-                logger.debug(f"  跳过低分内容 score={score}: {item.get('title', '')[:40]}")
-                continue
-
             enriched = dict(item)
             enriched["ai_score"] = score
             enriched["ai_summary"] = summary
             enriched["ai_reason"] = reason
+
+            if score < min_score:
+                logger.debug(f"  跳过低分内容 score={score}: {item.get('title', '')[:40]}")
+                low_score_pool.append(enriched)
+                continue
+
             results.append(enriched)
 
         except json.JSONDecodeError as e:
@@ -352,6 +547,13 @@ def summarize_items(
         leftover.sort(key=lambda x: x.get("ai_score", 0), reverse=True)
         selected.extend(leftover[:remaining])
 
+    selected = _enforce_source_minimums(
+        selected=selected,
+        high_score_items=results,
+        low_score_items=low_score_pool,
+        source_minimums=source_minimums,
+        max_output=max_output,
+    )
     selected.sort(key=lambda x: x.get("ai_score", 0), reverse=True)
     return selected
 
