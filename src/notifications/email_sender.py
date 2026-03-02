@@ -28,16 +28,49 @@ def _get_recipients(config: dict) -> list[str]:
     return config.get("notifications", {}).get("email", {}).get("recipients", [])
 
 
+def _render_html(payload: dict, config: dict) -> str:
+    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True)
+    template = env.get_template("email.html")
+    today: date = payload["date"]
+    return template.render(
+        subject_prefix=payload.get("subject_prefix", "DailyRadar"),
+        schedule_name=payload.get("schedule_name", ""),
+        date_str=today.strftime("%Y-%m-%d"),
+        weekday_str=WEEKDAY_ZH[today.weekday()],
+        schedule_entries=payload.get("schedule_entries") or [],
+        todos=payload.get("todos") or [],
+        news_items=payload.get("news_items") or [],
+        ai_model=config.get("ai", {}).get("model", ""),
+    )
+
+
+def _smtp_send(smtp_server: str, smtp_port: int, smtp_user: str, smtp_pass: str,
+               recipients: list[str], msg: MIMEMultipart) -> None:
+    if smtp_port == 465:
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_user, recipients, msg.as_string())
+    else:
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.sendmail(smtp_user, recipients, msg.as_string())
+
+
 def send_email(payload: dict, config: dict) -> bool:
     """
     渲染 email.html 模板并通过 SMTP 发送。
+
+    schedule / todos 属于个人隐私内容，只发给 EMAIL_FROM（发件人自己）；
+    其他收件人只收到新闻精选部分。
 
     Args:
         payload: 来自 main.py 的数据字典
         config:  AppConfig dict
 
     Returns:
-        True 表示发送成功
+        True 表示至少一封邮件发送成功
     """
     smtp_server = os.environ.get("EMAIL_SMTP_SERVER", "smtp.qq.com")
     smtp_port   = int(os.environ.get("EMAIL_SMTP_PORT", "465"))
@@ -53,47 +86,39 @@ def send_email(payload: dict, config: dict) -> bool:
         logger.error("邮件配置缺失: EMAIL_TO 未设置")
         return False
 
-    # ── 渲染 HTML ────────────────────────────────────────────
-    env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True)
-    template = env.get_template("email.html")
-
     today: date = payload["date"]
-    context = {
-        "subject_prefix": payload.get("subject_prefix", "DailyRadar"),
-        "schedule_name": payload.get("schedule_name", ""),
-        "date_str": today.strftime("%Y-%m-%d"),
-        "weekday_str": WEEKDAY_ZH[today.weekday()],
-        "schedule_entries": payload.get("schedule_entries") or [],
-        "todos": payload.get("todos") or [],
-        "news_items": payload.get("news_items") or [],
-        "ai_model": config.get("ai", {}).get("model", "claude-sonnet-4-6"),
-    }
-    html_body = template.render(**context)
-
-    # ── 组装邮件 ─────────────────────────────────────────────
     subject = f"{payload.get('subject_prefix', 'DailyRadar')} · {today.strftime('%Y-%m-%d')}"
+    has_personal = bool(payload.get("schedule_entries") or payload.get("todos"))
 
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = smtp_user
-    msg["To"] = ", ".join(recipients)
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    # 有个人内容时：个人邮箱收完整版，其他收件人收纯新闻版
+    personal_recipients = [r for r in recipients if r == smtp_user] if has_personal else []
+    other_recipients    = [r for r in recipients if r != smtp_user] if has_personal else recipients
 
-    # ── 发送 ─────────────────────────────────────────────────
+    success = False
+
+    def _make_msg(html: str, to: list[str]) -> MIMEMultipart:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = smtp_user
+        msg["To"] = ", ".join(to)
+        msg.attach(MIMEText(html, "html", "utf-8"))
+        return msg
+
     try:
-        if smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
-                server.login(smtp_user, smtp_pass)
-                server.sendmail(smtp_user, recipients, msg.as_string())
-        else:
-            with smtplib.SMTP(smtp_server, smtp_port) as server:
-                server.ehlo()
-                server.starttls()
-                server.login(smtp_user, smtp_pass)
-                server.sendmail(smtp_user, recipients, msg.as_string())
+        if personal_recipients:
+            html = _render_html(payload, config)
+            _smtp_send(smtp_server, smtp_port, smtp_user, smtp_pass,
+                       personal_recipients, _make_msg(html, personal_recipients))
+            logger.info(f"邮件已发送（完整版）: {subject} → {personal_recipients}")
+            success = True
 
-        logger.info(f"邮件已发送: {subject} → {recipients}")
-        return True
+        if other_recipients:
+            news_payload = {**payload, "schedule_entries": [], "todos": []}
+            html = _render_html(news_payload, config)
+            _smtp_send(smtp_server, smtp_port, smtp_user, smtp_pass,
+                       other_recipients, _make_msg(html, other_recipients))
+            logger.info(f"邮件已发送（新闻版）: {subject} → {other_recipients}")
+            success = True
 
     except smtplib.SMTPAuthenticationError:
         logger.error("SMTP 认证失败：请检查 EMAIL_FROM / EMAIL_PASSWORD")
@@ -101,3 +126,5 @@ def send_email(payload: dict, config: dict) -> bool:
     except Exception as e:
         logger.error(f"邮件发送失败: {e}")
         return False
+
+    return success

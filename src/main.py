@@ -120,7 +120,7 @@ def run(schedule_name: str, config: dict, dry_run: bool = False):
         logger.info(f"采集完成，共 {len(raw_items)} 条原始内容")
 
         if raw_items:
-            logger.info("🤖 Claude 摘要中...")
+            logger.info("🤖 AI 摘要中...")
             from src.ai.summarizer import summarize_items
             news_items = summarize_items(raw_items, config)
             logger.info(f"   筛选后: {len(news_items)} 条")

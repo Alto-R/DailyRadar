@@ -5,7 +5,7 @@ feedback.py - SQLite 偏好反馈读写
 负责：
   - 初始化 feedback.db
   - 保存用户反馈（score 1-5）
-  - 读取高分历史作为 Claude few-shot 示例
+  - 读取高分历史作为 AI few-shot 示例
 """
 
 import sqlite3
@@ -42,7 +42,7 @@ def init_db(config: dict):
 
 
 def load_taste_examples(config: dict, limit: int = 8) -> list[dict]:
-    """读取高分历史（score >= 4），作为 Claude few-shot 示例。"""
+    """读取高分历史（score >= 4），作为 AI few-shot 示例。"""
     init_db(config)
     db_path = get_db_path(config)
     conn = sqlite3.connect(db_path)

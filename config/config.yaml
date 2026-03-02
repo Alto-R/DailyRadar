@@ -9,7 +9,7 @@
 # ──────────────────────────────────────────────────────────────
 app:
   timezone: "Asia/Shanghai"   # 所有时间操作的基准时区
-  language: "zh"              # Claude 输出语言："zh" 中文 | "en" 英文
+  language: "zh"              # AI 输出语言："zh" 中文 | "en" 英文
 
 
 # ──────────────────────────────────────────────────────────────
@@ -19,7 +19,7 @@ app:
 #   name:           调度名称（日志和邮件主题中显示）
 #   cron:           标准 cron 表达式（由 supercronic 执行）
 #   content:        内容块列表，可选值：
-#                     news     - 采集新闻 + Claude AI 摘要
+#                     news     - 采集新闻 + AI 摘要
 #                     schedule - 读取今日日程（personal/schedule.yaml）
 #                     todos    - 读取待办提醒（personal/todos.yaml）
 #   sources:        news 内容块使用的采集源，可选：github / youtube / rss
@@ -27,7 +27,7 @@ app:
 # ──────────────────────────────────────────────────────────────
 schedules:
   - name: "早间日报"
-    cron: "0 8 * * *"           # 每天早上 8:00
+    cron: "0 10 * * *"           # 每天早上 10:00
     content: [schedule, todos, news]
     sources: [github, youtube, rss]     
     subject_prefix: "早安 | DailyRadar"
@@ -142,10 +142,10 @@ collectors:
 # ──────────────────────────────────────────────────────────────
 ai:
   # 模型名称（LiteLLM 格式：provider/model_name），环境变量 AI_MODEL 优先
-  # 示例：openai/gpt-4o  |  anthropic/claude-sonnet-4-6  |  deepseek/deepseek-chat
+  # 示例：openai/gpt-5.2  |  gemini/gemini-3.1-flash
   model: "openai/gemini-3.1-pro-preview"
   # 自定义 API 端点（环境变量 AI_API_BASE 优先，使用官方接口时留空）
-  api_base: "https://jeniya.cn/v1"
+  api_base: ""
   max_tokens: 512               # 每条摘要的最大 token 数
   min_relevance_score: 5        # 相关性过滤阈值（1-10），低于此分数不展示
   max_items_per_digest: 20      # 每次最多展示的新闻条目数
