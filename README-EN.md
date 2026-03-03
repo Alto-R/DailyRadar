@@ -222,6 +222,8 @@ Agent core lives in `src/agent/`, following “LLM planning -> tool calls -> sta
 
 - Tool policy: allowlist / denylist / `allow_side_effects`
 - Step config: `agent.max_steps` / `agent.schedule_max_steps`, uniformly capped by `agent.max_steps_hard_limit`
+- Schedule side-effect switch: `agent.schedule_allow_side_effects` (controls real sends in `--agent-schedule-name`)
+- Context lookback window: `agent.recent_turns_context_limit` (inject last N turns into planner prompt)
 - Session DB: `data/agent_sessions.db`
 - Scheduled runs are always persisted (fixed behavior, no user-facing toggle)
 

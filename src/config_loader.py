@@ -42,6 +42,8 @@ def load_config() -> dict:
     # agent 默认配置（集中在配置层，避免业务代码写死默认值）
     cfg["agent"].setdefault("max_steps", 6)
     cfg["agent"].setdefault("max_steps_hard_limit", 20)
+    cfg["agent"].setdefault("schedule_allow_side_effects", True)
+    cfg["agent"].setdefault("recent_turns_context_limit", 6)
     cfg["agent"].setdefault("policy", {})
     cfg["agent"]["policy"].setdefault("allow_tools", [])
     cfg["agent"]["policy"].setdefault("deny_tools", [])

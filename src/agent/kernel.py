@@ -311,7 +311,9 @@ def run_agent_turn(
     session_id = options.session_id or str(uuid4())
     store.ensure_session(session_id, title="SignalNest Local Agent Session")
     state = store.load_state(session_id)
-    recent_turns = store.load_recent_turns(session_id, limit=6)
+    recent_turns_limit = int(config.get("agent", {}).get("recent_turns_context_limit", 6))
+    recent_turns_limit = max(1, recent_turns_limit)
+    recent_turns = store.load_recent_turns(session_id, limit=recent_turns_limit)
 
     agent_cfg = config.get("agent", {})
     default_max_steps = int(agent_cfg["max_steps"])

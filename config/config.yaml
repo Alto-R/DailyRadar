@@ -199,9 +199,13 @@ agent:
   # 可选：专门覆盖定时调度（--agent-schedule-name）的最大步数
   # 留空则回退到 max_steps
   schedule_max_steps: 8
+  # 定时调度（--agent-schedule-name）是否允许副作用工具（如发送通知）
+  schedule_allow_side_effects: true
+  # 跨轮上下文注入最近多少轮对话摘要（越大越耗 token）
+  recent_turns_context_limit: 6
 
   # 工具策略（主要影响 --agent-message 交互模式）
-  # 注意：定时调度路径会在代码里强制 allow_side_effects=True，确保可发送通知
+  # 注意：定时调度路径默认使用 schedule_allow_side_effects=true
   policy:
     # 允许清单：留空表示不启用白名单限制
     allow_tools: []

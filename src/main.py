@@ -110,13 +110,14 @@ def run_agent_for_schedule(schedule_name: str, config: dict, dry_run: bool = Fal
 
     agent_cfg = config.get("agent", {})
     schedule_max_steps = agent_cfg.get("schedule_max_steps", agent_cfg.get("max_steps"))
+    schedule_allow_side_effects = bool(agent_cfg.get("schedule_allow_side_effects", True))
     result = run_agent_turn(
         message,
         config,
         options=AgentRunOptions(
             max_steps=schedule_max_steps,
             dry_run=dry_run,
-            allow_side_effects=True,
+            allow_side_effects=schedule_allow_side_effects,
         ),
     )
 
@@ -124,7 +125,7 @@ def run_agent_for_schedule(schedule_name: str, config: dict, dry_run: bool = Fal
     if status != "ok":
         raise RuntimeError(result.get("response", "agent schedule run failed"))
 
-    if not dry_run:
+    if not dry_run and schedule_allow_side_effects:
         steps = result.get("steps", [])
         dispatched = any(
             isinstance(step, dict)
@@ -134,6 +135,8 @@ def run_agent_for_schedule(schedule_name: str, config: dict, dry_run: bool = Fal
         )
         if not dispatched:
             raise RuntimeError("agent run finished without dispatch_notifications")
+    elif not dry_run and not schedule_allow_side_effects:
+        logger.warning("agent.schedule_allow_side_effects=false，已跳过通知发送校验")
 
     return result
 
