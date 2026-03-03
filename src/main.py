@@ -47,35 +47,6 @@ def _split_csv(value: str) -> list[str] | None:
     return normalized or None
 
 
-def _env_bool(name: str) -> bool | None:
-    value = os.environ.get(name)
-    if value is None:
-        return None
-    normalized = value.strip().lower()
-    if normalized in {"1", "true", "yes", "on"}:
-        return True
-    if normalized in {"0", "false", "no", "off"}:
-        return False
-    return None
-
-
-def _auto_persist_schedule_runs_enabled(config: dict) -> bool:
-    """
-    是否为常规 schedule run 自动写入 agent 会话库。
-
-    优先级：
-      1) 环境变量 AGENT_AUTO_PERSIST_SCHEDULE_RUNS
-      2) config.agent.auto_persist_schedule_runs
-      3) 默认 True
-    """
-    env_override = _env_bool("AGENT_AUTO_PERSIST_SCHEDULE_RUNS")
-    if env_override is not None:
-        return env_override
-
-    agent_cfg = config.get("agent", {})
-    return bool(agent_cfg.get("auto_persist_schedule_runs", True))
-
-
 def _resolve_schedule(schedule_name: str, config: dict) -> dict:
     """
     Resolve schedule by name, fallback to the first one.
@@ -194,35 +165,33 @@ def run(schedule_name: str, config: dict, dry_run: bool = False):
         f"▶ Schedule: '{schedule['name']}' | content={content_blocks} | sources={sources} | focus={focus!r}"
     )
 
-    # 默认将每次 schedule 推送也记录为一个持久会话（可用于 Docker 场景回溯）。
+    # 每次 schedule 推送都记录为持久会话（用于 Docker 场景回溯与排障）。
     session_store = None
     turn_ref = None
     session_id = ""
     session_status = "ok"
     session_reply = ""
+    from src.agent.session_store import AgentSessionStore
 
-    if _auto_persist_schedule_runs_enabled(config):
-        from src.agent.session_store import AgentSessionStore
-
-        data_dir = Path(config.get("storage", {}).get("data_dir", "/app/data"))
-        session_store = AgentSessionStore(data_dir / "agent_sessions.db")
-        session_id = (
-            f"schedule-{_slugify_schedule_name(schedule.get('name', ''))}-"
-            f"{now.strftime('%Y%m%d_%H%M%S')}-{uuid4().hex[:8]}"
-        )
-        session_store.ensure_session(session_id, title=f"Scheduled Push | {schedule['name']}")
-        backend = os.environ.get("AI_BACKEND") or config.get("ai", {}).get("backend", "litellm")
-        model = os.environ.get("AI_MODEL") or config.get("ai", {}).get("model", "")
-        turn_ref = session_store.start_turn(
-            session_id,
-            (
-                f"Auto schedule push: name={schedule['name']} "
-                f"date={today} dry_run={str(dry_run).lower()}"
-            ),
-            backend=backend,
-            model=model,
-        )
-        logger.info(f"🧠 已开启自动会话持久化: session_id={session_id}")
+    data_dir = Path(config.get("storage", {}).get("data_dir", "/app/data"))
+    session_store = AgentSessionStore(data_dir / "agent_sessions.db")
+    session_id = (
+        f"schedule-{_slugify_schedule_name(schedule.get('name', ''))}-"
+        f"{now.strftime('%Y%m%d_%H%M%S')}-{uuid4().hex[:8]}"
+    )
+    session_store.ensure_session(session_id, title=f"Scheduled Push | {schedule['name']}")
+    backend = os.environ.get("AI_BACKEND") or config.get("ai", {}).get("backend", "litellm")
+    model = os.environ.get("AI_MODEL") or config.get("ai", {}).get("model", "")
+    turn_ref = session_store.start_turn(
+        session_id,
+        (
+            f"Auto schedule push: name={schedule['name']} "
+            f"date={today} dry_run={str(dry_run).lower()}"
+        ),
+        backend=backend,
+        model=model,
+    )
+    logger.info(f"🧠 会话持久化已启用: session_id={session_id}")
 
     schedule_entries = None
     projects = None

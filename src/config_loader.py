@@ -35,8 +35,17 @@ def load_config() -> dict:
     cfg.setdefault("schedules", [])
     cfg.setdefault("collectors", {})
     cfg.setdefault("ai", {})
+    cfg.setdefault("agent", {})
     cfg.setdefault("notifications", {})
     cfg.setdefault("storage", {})
+
+    # agent 默认配置（集中在配置层，避免业务代码写死默认值）
+    cfg["agent"].setdefault("max_steps", 6)
+    cfg["agent"].setdefault("max_steps_hard_limit", 20)
+    cfg["agent"].setdefault("policy", {})
+    cfg["agent"]["policy"].setdefault("allow_tools", [])
+    cfg["agent"]["policy"].setdefault("deny_tools", [])
+    cfg["agent"]["policy"].setdefault("allow_side_effects", False)
 
     # 注入 storage data_dir（容器内固定路径或本地 data/）
     if not cfg["storage"].get("data_dir"):

@@ -313,8 +313,13 @@ def run_agent_turn(
     state = store.load_state(session_id)
     recent_turns = store.load_recent_turns(session_id, limit=6)
 
-    max_steps = int(options.max_steps or config.get("agent", {}).get("max_steps", 6))
-    max_steps = max(1, min(max_steps, 20))
+    agent_cfg = config.get("agent", {})
+    default_max_steps = int(agent_cfg["max_steps"])
+    hard_limit = int(agent_cfg["max_steps_hard_limit"])
+    hard_limit = max(1, hard_limit)
+    requested_max_steps = options.max_steps if options.max_steps is not None else default_max_steps
+    max_steps = int(requested_max_steps)
+    max_steps = max(1, min(max_steps, hard_limit))
 
     backend, call_kwargs = _build_call_kwargs(config)
     model_name = str(call_kwargs.get("model", ""))

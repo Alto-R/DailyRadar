@@ -169,6 +169,7 @@ python -m src.main --agent-tools-schema
 | `collectors.youtube` | Subscribed-channel + keyword-search parameters |
 | `collectors.rss` | RSS window and per-feed limits |
 | `ai.*` | Backend/model/threshold/concurrency/source minimums |
+| `agent.*` | Agent step limits and policy (including `max_steps_hard_limit`) |
 | `notifications.*` | Delivery channel toggles |
 | `storage.*` | Data directory and todo lookahead window |
 
@@ -220,10 +221,9 @@ Agent core lives in `src/agent/`, following “LLM planning -> tool calls -> sta
 ### Policy and persistence
 
 - Tool policy: allowlist / denylist / `allow_side_effects`
+- Step config: `agent.max_steps` / `agent.schedule_max_steps`, uniformly capped by `agent.max_steps_hard_limit`
 - Session DB: `data/agent_sessions.db`
-- Auto-persist switch for scheduled runs:
-  - environment variable `AGENT_AUTO_PERSIST_SCHEDULE_RUNS`
-  - or `config.agent.auto_persist_schedule_runs`
+- Scheduled runs are always persisted (fixed behavior, no user-facing toggle)
 
 ## 🗂️ Data & Preference Learning
 

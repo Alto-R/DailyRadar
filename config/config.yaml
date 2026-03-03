@@ -186,7 +186,33 @@ ai:
 
 
 # ──────────────────────────────────────────────────────────────
-# 5. 通知渠道
+# 5. Agent 配置
+# ──────────────────────────────────────────────────────────────
+agent:
+  # 单次 agent 运行最大工具步数（会被 max_steps_hard_limit 裁剪）
+  # 适用于：
+  # - `python -m src.main --agent-message ...`
+  # - `python -m src.main --agent-schedule-name ...`（当 schedule_max_steps 未设置时）
+  max_steps: 6
+  # agent 工具步数硬上限（统一在配置中定义，不在代码里写死）
+  max_steps_hard_limit: 20
+  # 可选：专门覆盖定时调度（--agent-schedule-name）的最大步数
+  # 留空则回退到 max_steps
+  schedule_max_steps: 8
+
+  # 工具策略（主要影响 --agent-message 交互模式）
+  # 注意：定时调度路径会在代码里强制 allow_side_effects=True，确保可发送通知
+  policy:
+    # 允许清单：留空表示不启用白名单限制
+    allow_tools: []
+    # 拒绝清单：命中后直接禁止调用
+    deny_tools: []
+    # 是否允许副作用工具（如 dispatch_notifications）
+    allow_side_effects: false
+
+
+# ──────────────────────────────────────────────────────────────
+# 6. 通知渠道
 # 所有 API Key / 密码 / Webhook URL 请在 .env 中配置
 # ──────────────────────────────────────────────────────────────
 notifications:
@@ -211,7 +237,7 @@ notifications:
 
 
 # ──────────────────────────────────────────────────────────────
-# 6. 存储设置
+# 7. 存储设置
 # ──────────────────────────────────────────────────────────────
 storage:
   data_dir: "/app/data"         # 数据目录（容器内路径，通过 volume 持久化）
