@@ -1,6 +1,6 @@
 """
 Local agent kernel:
-  - tool-driven planning loop
+  - tool-driven planning loop (native tool calling for litellm, JSON fallback for CLI)
   - schema validation
   - minimal policy enforcement
   - session persistence
@@ -19,7 +19,7 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from src.ai.cli_backend import _call_ai
+from src.ai.cli_backend import _call_ai, call_litellm_with_tools
 from src.agent.policy import ToolPolicy
 from src.agent.schemas import ToolSchemaError, validate_tool_args
 from src.agent.session_store import AgentSessionStore
@@ -57,6 +57,25 @@ def _build_call_kwargs(config: dict) -> tuple[str, dict]:
     return backend, kwargs
 
 
+# ── Tool spec builder ────────────────────────────────────────────────────────
+
+def _build_openai_tool_specs(tools: dict[str, ToolSpec]) -> list[dict[str, Any]]:
+    """Convert ToolSpec dict to OpenAI function calling format."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": spec.name,
+                "description": spec.description,
+                "parameters": spec.input_schema,
+            },
+        }
+        for spec in tools.values()
+    ]
+
+
+# ── Legacy helpers (for CLI backend fallback) ────────────────────────────────
+
 def _extract_json_objects(text: str) -> list[dict[str, Any]]:
     text = text.strip()
     if not text:
@@ -76,7 +95,6 @@ def _extract_json_objects(text: str) -> list[dict[str, Any]]:
             for item in obj:
                 _add_obj(item)
 
-    # 1) direct parse
     try:
         obj = json.loads(text)
         _add_obj(obj)
@@ -85,7 +103,6 @@ def _extract_json_objects(text: str) -> list[dict[str, Any]]:
     except json.JSONDecodeError:
         pass
 
-    # 2) fenced code blocks
     for fence_match in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE):
         try:
             obj = json.loads(fence_match.group(1).strip())
@@ -93,7 +110,6 @@ def _extract_json_objects(text: str) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             pass
 
-    # 3) concatenated JSON values (e.g. multiple JSON objects in sequence)
     decoder = json.JSONDecoder()
     idx = 0
     n = len(text)
@@ -115,6 +131,20 @@ def _extract_json_objects(text: str) -> list[dict[str, Any]]:
 def _extract_action_objects(text: str) -> list[dict[str, Any]]:
     return [obj for obj in _extract_json_objects(text) if "action" in obj]
 
+
+def _format_tool_catalog(tools: dict[str, ToolSpec]) -> str:
+    lines = []
+    for tool in tools.values():
+        schema_str = json.dumps(tool.input_schema, ensure_ascii=False)
+        lines.append(
+            f"- {tool.name}: {tool.description}\n"
+            f"  side_effect={str(tool.side_effect).lower()}\n"
+            f"  input_schema={schema_str}"
+        )
+    return "\n".join(lines)
+
+
+# ── Message builders ─────────────────────────────────────────────────────────
 
 def _truncate_text(text: str, max_chars: int = 1400) -> str:
     if len(text) <= max_chars:
@@ -142,18 +172,6 @@ def _state_overview(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _format_tool_catalog(tools: dict[str, ToolSpec]) -> str:
-    lines = []
-    for tool in tools.values():
-        schema_str = json.dumps(tool.input_schema, ensure_ascii=False)
-        lines.append(
-            f"- {tool.name}: {tool.description}\n"
-            f"  side_effect={str(tool.side_effect).lower()}\n"
-            f"  input_schema={schema_str}"
-        )
-    return "\n".join(lines)
-
-
 def _format_recent_turns(turns: list[dict]) -> str:
     if not turns:
         return "(none)"
@@ -169,27 +187,38 @@ def _format_recent_turns(turns: list[dict]) -> str:
     return "\n\n".join(chunks)
 
 
-def _build_step_messages(
+def _build_system_prompt(
     *,
-    user_message: str,
     tools: dict[str, ToolSpec],
     policy: ToolPolicy,
-    state: dict[str, Any],
-    recent_turns: list[dict],
-    step_history: list[dict[str, Any]],
-    max_steps: int,
-) -> list[dict]:
+    backend: str,
+    user_profile: str = "",
+    now_str: str = "",
+) -> str:
     policy_note = (
-        "Tool policy: side-effect tools are allowed."
+        "工具策略：副作用工具（如发送通知）已允许。"
         if policy.allow_side_effects
-        else "Tool policy: side-effect tools are blocked."
+        else "工具策略：副作用工具（如发送通知）已禁用，当前为查询/预览模式。"
     )
-    allow_note = (
-        f"Allowlist: {sorted(policy.allow_tools)}" if policy.allow_tools else "Allowlist: (not set)"
-    )
-    deny_note = f"Denylist: {sorted(policy.deny_tools)}" if policy.deny_tools else "Denylist: (none)"
 
-    system_prompt = f"""You are SignalNest local agent.
+    if backend == "litellm":
+        # Native tool calling — no JSON format instructions needed, no tool catalog
+        persona = f"现在是 {now_str}。\n\n" if now_str else ""
+        profile_section = f"## 关于用户\n{user_profile}\n\n" if user_profile else ""
+        return (
+            f"你是用户的个人 AI 助手，名叫 SignalNest。{persona}"
+            f"{profile_section}"
+            f"{policy_note}\n\n"
+            "根据用户的需求，自主决定调用哪些工具、以什么顺序调用。"
+            "完成任务后给出简洁清晰的最终回复。"
+        )
+    else:
+        # CLI backend fallback — needs JSON format instructions and tool catalog
+        allow_note = (
+            f"Allowlist: {sorted(policy.allow_tools)}" if policy.allow_tools else "Allowlist: (not set)"
+        )
+        deny_note = f"Denylist: {sorted(policy.deny_tools)}" if policy.deny_tools else "Denylist: (none)"
+        return f"""You are SignalNest local agent.
 You can call tools to solve the user's request step by step.
 
 {policy_note}
@@ -216,36 +245,28 @@ Rules:
 - Never invent tool names.
 - Respect tool schemas exactly.
 - If enough information is already available, return action=final.
-- Maximum steps for this run: {max_steps}.
 
 Available tools:
 {_format_tool_catalog(tools)}
 """
 
-    user_prompt = f"""User request:
-{user_message}
 
-Session state overview:
-{json.dumps(_state_overview(state), ensure_ascii=False, indent=2)}
-
-Recent turns:
-{_format_recent_turns(recent_turns)}
-
-Current run step history:
-{json.dumps(step_history, ensure_ascii=False, indent=2)}
-"""
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
+def _build_initial_user_message(
+    user_message: str,
+    state: dict[str, Any],
+    recent_turns: list[dict],
+) -> str:
+    overview = _state_overview(state)
+    recent = _format_recent_turns(recent_turns)
+    return (
+        f"{user_message}\n\n"
+        f"当前会话状态：\n{json.dumps(overview, ensure_ascii=False, indent=2)}\n\n"
+        f"历史对话摘要：\n{recent}"
+    )
 
 
 def _normalize_final_text(text: str) -> str:
     return text.strip() or "Done."
-
-
-def _call_planner(messages: list[dict], backend: str, call_kwargs: dict) -> str:
-    return _call_ai(messages, backend, call_kwargs)
 
 
 def _synthesize_fallback_response(
@@ -259,14 +280,14 @@ def _synthesize_fallback_response(
     synth_messages = [
         {
             "role": "system",
-            "content": "You are a concise assistant. Summarize the completed tool steps and answer the user.",
+            "content": "你是简洁的助手。根据已完成的工具步骤，总结结果回答用户。",
         },
         {
             "role": "user",
             "content": (
-                f"User request:\n{user_message}\n\n"
-                f"Tool history:\n{json.dumps(step_history, ensure_ascii=False, indent=2)}\n\n"
-                "Provide the final response."
+                f"用户请求：\n{user_message}\n\n"
+                f"已执行步骤：\n{json.dumps(step_history, ensure_ascii=False, indent=2)}\n\n"
+                "请给出最终回复。"
             ),
         },
     ]
@@ -282,14 +303,52 @@ def _synthesize_fallback_response(
         return f"Executed {len(step_history)} steps. Last result: {json.dumps(last, ensure_ascii=False)}"
 
 
+def _execute_tool(
+    tool_name: str,
+    args: dict[str, Any],
+    tools: dict[str, ToolSpec],
+    policy: ToolPolicy,
+    rt: ToolRuntime,
+) -> tuple[dict[str, Any], bool, str | None]:
+    """Execute a single tool. Returns (result_dict, success, error_msg)."""
+    tool = tools.get(tool_name)
+    if not tool:
+        err = f"unknown tool '{tool_name}'"
+        return {"error": err}, False, err
+
+    allowed, reason = policy.check(tool)
+    if not allowed:
+        err = reason or "blocked by policy"
+        return {"error": err}, False, err
+
+    try:
+        validated_args = validate_tool_args(tool_name, tool.input_schema, args)
+        result = tool.handler(validated_args, rt)
+        return result, True, None
+    except ToolSchemaError as e:
+        return {"error": str(e)}, False, str(e)
+    except Exception as e:
+        return {"error": str(e)}, False, str(e)
+
+
+def _load_user_profile(config: dict) -> str:
+    """Read config/personal/user.md and return its raw content for system prompt injection."""
+    try:
+        personal_dir = Path(config.get("_personal_dir", ""))
+        profile_path = personal_dir / "user.md"
+        if profile_path.exists():
+            return profile_path.read_text(encoding="utf-8").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def run_agent_turn(
     user_message: str,
     config: dict,
     options: AgentRunOptions | None = None,
 ) -> dict[str, Any]:
-    """
-    Execute one local agent turn.
-    """
+    """Execute one local agent turn."""
     options = options or AgentRunOptions()
     message = user_message.strip()
     if not message:
@@ -313,30 +372,18 @@ def run_agent_turn(
             session_title = str(agent_cfg["session_title_template"])
     store.ensure_session(session_id, title=session_title)
     state = store.load_state(session_id)
-    recent_turns_limit = int(agent_cfg["recent_turns_context_limit"])
-    recent_turns_limit = max(1, recent_turns_limit)
+    recent_turns_limit = max(1, int(agent_cfg["recent_turns_context_limit"]))
     recent_turns = store.load_recent_turns(session_id, limit=recent_turns_limit)
 
     default_max_steps = int(agent_cfg["max_steps"])
-    hard_limit = int(agent_cfg["max_steps_hard_limit"])
-    hard_limit = max(1, hard_limit)
+    hard_limit = max(1, int(agent_cfg["max_steps_hard_limit"]))
     fallback_max_tokens = int(agent_cfg["fallback_response_max_tokens"])
     requested_max_steps = options.max_steps if options.max_steps is not None else default_max_steps
-    max_steps = int(requested_max_steps)
-    max_steps = max(1, min(max_steps, hard_limit))
+    max_steps = max(1, min(int(requested_max_steps), hard_limit))
 
     backend, call_kwargs = _build_call_kwargs(config)
     model_name = str(call_kwargs.get("model", ""))
-    turn_ref = store.start_turn(
-        session_id,
-        message,
-        backend=backend,
-        model=model_name,
-    )
-
-    step_history: list[dict[str, Any]] = []
-    final_response: str | None = None
-    status = "ok"
+    turn_ref = store.start_turn(session_id, message, backend=backend, model=model_name)
 
     tz_name = config.get("app", {}).get("timezone", "Asia/Shanghai")
     rt = ToolRuntime(
@@ -346,117 +393,161 @@ def run_agent_turn(
         now=datetime.now(ZoneInfo(tz_name)),
     )
 
-    try:
-        pending_actions: list[dict[str, Any]] = []
-        step_no = 1
-        while step_no <= max_steps:
-            if not pending_actions:
-                messages = _build_step_messages(
-                    user_message=message,
-                    tools=tools,
-                    policy=policy,
-                    state=state,
-                    recent_turns=recent_turns,
-                    step_history=step_history,
-                    max_steps=max_steps,
-                )
-                raw = _call_planner(messages, backend, call_kwargs)
-                pending_actions = _extract_action_objects(raw)
+    user_profile = _load_user_profile(config)
+    now_str = rt.now.strftime("%Y年%m月%d日 %H:%M")
+    system_prompt = _build_system_prompt(
+        tools=tools,
+        policy=policy,
+        backend=backend,
+        user_profile=user_profile,
+        now_str=now_str,
+    )
 
-                if not pending_actions:
-                    final_response = _normalize_final_text(raw)
+    step_history: list[dict[str, Any]] = []
+    final_response: str | None = None
+    status = "ok"
+
+    try:
+        if backend == "litellm":
+            # ── Native tool calling path ─────────────────────────────────────
+            openai_tools = _build_openai_tool_specs(tools)
+            messages: list[dict[str, Any]] = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": _build_initial_user_message(message, state, recent_turns)},
+            ]
+
+            step_no = 1
+            while step_no <= max_steps:
+                tool_calls, final_text = call_litellm_with_tools(messages, call_kwargs, openai_tools)
+
+                if final_text is not None:
+                    final_response = _normalize_final_text(final_text)
                     break
 
-            action_obj = pending_actions.pop(0)
-            action = str(action_obj.get("action", "")).strip().lower()
-            if action == "final":
-                final_response = _normalize_final_text(str(action_obj.get("response", "")))
-                break
+                if not tool_calls:
+                    break
 
-            if action != "tool":
-                step_history.append(
+                # Add assistant message with all tool_calls to history
+                messages.append(
                     {
-                        "step": step_no,
-                        "error": f"invalid action {action!r}",
-                        "raw_action_object": action_obj,
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": tc["call_id"],
+                                "type": "function",
+                                "function": {
+                                    "name": tc["tool"],
+                                    "arguments": json.dumps(tc["arguments"], ensure_ascii=False),
+                                },
+                            }
+                            for tc in tool_calls
+                        ],
                     }
                 )
-                step_no += 1
-                continue
 
-            tool_name = str(action_obj.get("tool", "")).strip()
-            args = action_obj.get("arguments", {})
+                # Execute each tool call and add tool result messages
+                for tc in tool_calls:
+                    if step_no > max_steps:
+                        # Add placeholder error for remaining tool calls to keep message history valid
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tc["call_id"],
+                                "content": json.dumps({"error": "max_steps reached"}),
+                            }
+                        )
+                        continue
 
-            tool = tools.get(tool_name)
-            if not tool:
-                error_text = f"unknown tool '{tool_name}'"
-                step_history.append({"step": step_no, "tool": tool_name, "error": error_text})
-                store.add_tool_call(
-                    turn_ref.turn_id,
-                    step_no=step_no,
-                    tool_name=tool_name or "(missing)",
-                    args=args if isinstance(args, dict) else {"raw": args},
-                    success=False,
-                    error=error_text,
-                )
-                step_no += 1
-                continue
+                    tool_name = tc["tool"]
+                    args = tc["arguments"]
+                    result, success, error = _execute_tool(tool_name, args, tools, policy, rt)
 
-            allowed, reason = policy.check(tool)
-            if not allowed:
-                step_history.append({"step": step_no, "tool": tool_name, "error": reason})
-                store.add_tool_call(
-                    turn_ref.turn_id,
-                    step_no=step_no,
-                    tool_name=tool_name,
-                    args=args if isinstance(args, dict) else {"raw": args},
-                    success=False,
-                    error=reason or "blocked by policy",
-                )
-                step_no += 1
-                continue
+                    step_item: dict[str, Any] = {"step": step_no, "tool": tool_name, "arguments": args}
+                    if success:
+                        step_item["result"] = result
+                    else:
+                        step_item["error"] = error
+                    step_history.append(step_item)
 
-            try:
-                validated_args = validate_tool_args(tool_name, tool.input_schema, args)
-                result = tool.handler(validated_args, rt)
-                step_item = {
-                    "step": step_no,
-                    "tool": tool_name,
-                    "arguments": validated_args,
-                    "result": result,
-                }
+                    store.add_tool_call(
+                        turn_ref.turn_id,
+                        step_no=step_no,
+                        tool_name=tool_name,
+                        args=args,
+                        result=result if success else None,
+                        success=success,
+                        error=error,
+                    )
+
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["call_id"],
+                            "content": json.dumps(result, ensure_ascii=False, default=str),
+                        }
+                    )
+                    step_no += 1
+
+        else:
+            # ── CLI backend fallback (legacy JSON-in-text) ────────────────────
+            pending_actions: list[dict[str, Any]] = []
+            step_no = 1
+            while step_no <= max_steps:
+                if not pending_actions:
+                    legacy_messages = [
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"{message}\n\n"
+                                f"Session state: {json.dumps(_state_overview(state), ensure_ascii=False)}\n\n"
+                                f"Step history: {json.dumps(step_history, ensure_ascii=False)}"
+                            ),
+                        },
+                    ]
+                    raw = _call_ai(legacy_messages, backend, call_kwargs)
+                    pending_actions = _extract_action_objects(raw)
+                    if not pending_actions:
+                        final_response = _normalize_final_text(raw)
+                        break
+
+                action_obj = pending_actions.pop(0)
+                action = str(action_obj.get("action", "")).strip().lower()
+                if action == "final":
+                    final_response = _normalize_final_text(str(action_obj.get("response", "")))
+                    break
+
+                if action != "tool":
+                    step_history.append(
+                        {"step": step_no, "error": f"invalid action {action!r}", "raw_action_object": action_obj}
+                    )
+                    step_no += 1
+                    continue
+
+                tool_name = str(action_obj.get("tool", "")).strip()
+                args = action_obj.get("arguments", {})
+                if not isinstance(args, dict):
+                    args = {}
+
+                result, success, error = _execute_tool(tool_name, args, tools, policy, rt)
+
+                step_item = {"step": step_no, "tool": tool_name, "arguments": args}
+                if success:
+                    step_item["result"] = result
+                else:
+                    step_item["error"] = error
                 step_history.append(step_item)
+
                 store.add_tool_call(
                     turn_ref.turn_id,
                     step_no=step_no,
                     tool_name=tool_name,
-                    args=validated_args,
-                    result=result,
-                    success=True,
+                    args=args,
+                    result=result if success else None,
+                    success=success,
+                    error=error,
                 )
-            except ToolSchemaError as e:
-                error_text = str(e)
-                step_history.append({"step": step_no, "tool": tool_name, "error": error_text})
-                store.add_tool_call(
-                    turn_ref.turn_id,
-                    step_no=step_no,
-                    tool_name=tool_name,
-                    args=args if isinstance(args, dict) else {"raw": args},
-                    success=False,
-                    error=error_text,
-                )
-            except Exception as e:
-                error_text = str(e)
-                step_history.append({"step": step_no, "tool": tool_name, "error": error_text})
-                store.add_tool_call(
-                    turn_ref.turn_id,
-                    step_no=step_no,
-                    tool_name=tool_name,
-                    args=args if isinstance(args, dict) else {"raw": args},
-                    success=False,
-                    error=error_text,
-                )
-            finally:
                 step_no += 1
 
         if final_response is None:
@@ -467,6 +558,7 @@ def run_agent_turn(
                 call_kwargs=call_kwargs,
                 max_tokens=fallback_max_tokens,
             )
+
     except Exception as e:
         status = "error"
         final_response = f"Agent run failed: {e}"

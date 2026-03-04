@@ -55,28 +55,32 @@ def _build_agent_schedule_message(schedule: dict, *, dry_run: bool) -> str:
     schedule_name = schedule.get("name", "")
     subject_prefix = schedule.get("subject_prefix", "SignalNest")
 
-    dry_run_note = (
-        "这是 dry-run，不要真实发送通知；可以调用 dispatch_notifications 走通流程。"
+    wants_news = "news" in content_blocks
+    wants_schedule = "schedule" in content_blocks
+    wants_todos = "todos" in content_blocks
+
+    parts = []
+    if wants_news:
+        source_list = "、".join(sources) if sources else "所有来源"
+        focus_note = f"，重点关注：{focus}" if focus else ""
+        parts.append(f"从 {source_list} 收集今日资讯{focus_note}，筛选出最有价值的内容")
+    if wants_schedule:
+        parts.append("读取今日日程安排")
+    if wants_todos:
+        parts.append("读取当前活跃项目与待办事项")
+
+    intent = "；".join(parts) if parts else "整理今日信息"
+    dispatch_note = (
+        "这是预览模式（dry-run），可以走完整流程但不会真实发送。"
         if dry_run
-        else "这是正式定时任务，必须完成通知发送（dispatch_notifications）。"
+        else "整理完毕后发送通知。"
     )
 
     return (
-        "你正在执行 SignalNest 的定时调度任务，请按配置完成本次日报。\n"
-        f"- schedule_name: {schedule_name}\n"
-        f"- content_blocks: {content_blocks}\n"
-        f"- sources: {sources}\n"
-        f"- focus: {focus}\n"
-        f"- subject_prefix: {subject_prefix}\n"
-        f"- {dry_run_note}\n\n"
-        "执行要求：\n"
-        "1) 如果 content_blocks 包含 news：调用 collect_all_news 与 summarize_news。\n"
-        "2) 调用 summarize_news 生成新闻摘要。\n"
-        "3) 如果包含 schedule：调用 read_today_schedule。\n"
-        "4) 如果包含 todos：调用 read_active_projects。\n"
-        "5) 必须调用 build_digest_payload，并显式传入 schedule_name/subject_prefix/focus。\n"
-        "6) 若非 dry-run，必须调用 dispatch_notifications。\n"
-        "7) 最后返回清晰的最终结果。"
+        f"请帮我准备「{schedule_name}」：{intent}。"
+        f"完成后组装日报（schedule_name={schedule_name!r}，"
+        f"subject_prefix={subject_prefix!r}，focus={focus!r}），"
+        f"然后{dispatch_note}"
     )
 
 
@@ -272,6 +276,26 @@ def _save_last_digest(
     logger.info(f"🗂️ 已归档本次结果到 {history_path}")
 
 
+def run_query(query: str, config: dict) -> dict:
+    """Run a free-form query through the agent (no side effects, no forced dispatch)."""
+    from src.agent.kernel import AgentRunOptions, run_agent_turn
+
+    run_config = copy.deepcopy(config)
+    # Query mode: disable side-effect tools (no accidental notification sends)
+    run_config["agent"]["policy"]["allow_side_effects"] = False
+
+    result = run_agent_turn(
+        query,
+        run_config,
+        options=AgentRunOptions(
+            max_steps=int(run_config["agent"].get("max_steps", 6)),
+            dry_run=True,
+            session_title=f"Query | {query[:40]}",
+        ),
+    )
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description="SignalNest - Agent-only 个人 AI 日报服务")
     parser.add_argument(
@@ -284,6 +308,12 @@ def main():
         action="store_true",
         help="打印预览，不发送通知",
     )
+    parser.add_argument(
+        "--query",
+        default="",
+        metavar="TEXT",
+        help="向 agent 提问（交互查询模式，不发送通知）",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -293,15 +323,21 @@ def main():
     )
 
     config = load_config()
-    result = run_schedule(
-        schedule_name=args.schedule_name,
-        config=config,
-        dry_run=args.dry_run,
-    )
 
-    print(f"[schedule] {args.schedule_name or '(default)'}")
-    print(f"[agent session] {result['session_id']} | turn #{result['turn_index']}")
-    print(result.get("response", ""))
+    if args.query:
+        result = run_query(query=args.query, config=config)
+        print(f"[query] {args.query}")
+        print(f"[agent session] {result['session_id']} | turn #{result['turn_index']}")
+        print(result.get("response", ""))
+    else:
+        result = run_schedule(
+            schedule_name=args.schedule_name,
+            config=config,
+            dry_run=args.dry_run,
+        )
+        print(f"[schedule] {args.schedule_name or '(default)'}")
+        print(f"[agent session] {result['session_id']} | turn #{result['turn_index']}")
+        print(result.get("response", ""))
 
 
 if __name__ == "__main__":

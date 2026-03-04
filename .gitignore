@@ -8,4 +8,5 @@ __pycache__/
 venv/
 config/personal/schedule.md
 config/personal/projects.md
+config/personal/user.md
 .claude

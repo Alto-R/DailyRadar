@@ -108,3 +108,37 @@ def _call_ai(messages: list[dict], backend: str, call_kwargs: dict) -> str:
         raise ValueError(
             f"未知 AI 后端: {backend!r}，可选值: litellm | claude-cli | codex-cli"
         )
+
+
+def call_litellm_with_tools(
+    messages: list[dict],
+    call_kwargs: dict,
+    openai_tools: list[dict],
+) -> tuple[list[dict] | None, str | None]:
+    """
+    使用原生 Tool Calling 调用 LiteLLM。仅支持 litellm 后端。
+
+    Returns:
+        (tool_calls, final_text) — 二者恰好一个非 None。
+        tool_calls 列表中每个元素为:
+            {"tool": str, "arguments": dict, "call_id": str}
+        final_text: 无 tool_calls 时的纯文本最终回复。
+    """
+    import litellm
+
+    kw = {**call_kwargs, "tools": openai_tools, "tool_choice": "auto"}
+    response = litellm.completion(messages=messages, **kw)
+    msg = response.choices[0].message
+
+    if msg.tool_calls:
+        calls = []
+        for tc in msg.tool_calls:
+            try:
+                import json
+                args = json.loads(tc.function.arguments or "{}")
+            except Exception:
+                args = {}
+            calls.append({"tool": tc.function.name, "arguments": args, "call_id": tc.id})
+        return calls, None
+
+    return None, (msg.content or "").strip() or "Done."

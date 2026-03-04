@@ -82,10 +82,7 @@ def _tool_collect_github(args: dict[str, Any], rt: ToolRuntime) -> dict[str, Any
         gh_cfg["trending_languages"] = args["languages"]
 
     items = collect_github(cfg, max_repos=args.get("max_repos"))
-    if args.get("replace_state", False):
-        rt.state["raw_items"] = items
-    else:
-        rt.state["raw_items"] = _merge_items(rt.state.get("raw_items", []), items)
+    rt.state["raw_items"] = _merge_items(rt.state.get("raw_items", []), items)
 
     return {
         "source": "github",
@@ -102,10 +99,7 @@ def _tool_collect_rss(args: dict[str, Any], rt: ToolRuntime) -> dict[str, Any]:
         rss_cfg["days_lookback"] = args["days_back"]
 
     items = collect_rss(cfg, max_total=args.get("max_total"))
-    if args.get("replace_state", False):
-        rt.state["raw_items"] = items
-    else:
-        rt.state["raw_items"] = _merge_items(rt.state.get("raw_items", []), items)
+    rt.state["raw_items"] = _merge_items(rt.state.get("raw_items", []), items)
 
     return {
         "source": "rss",
@@ -121,10 +115,7 @@ def _tool_collect_youtube(args: dict[str, Any], rt: ToolRuntime) -> dict[str, An
         focus=args.get("focus", ""),
         max_total=args.get("max_total"),
     )
-    if args.get("replace_state", False):
-        rt.state["raw_items"] = items
-    else:
-        rt.state["raw_items"] = _merge_items(rt.state.get("raw_items", []), items)
+    rt.state["raw_items"] = _merge_items(rt.state.get("raw_items", []), items)
 
     return {
         "source": "youtube",
@@ -133,44 +124,6 @@ def _tool_collect_youtube(args: dict[str, Any], rt: ToolRuntime) -> dict[str, An
         "sample_titles": _compact_news_preview(items),
     }
 
-
-def _tool_collect_all_news(args: dict[str, Any], rt: ToolRuntime) -> dict[str, Any]:
-    sources = args.get("sources", ["github", "youtube", "rss"])
-    collected: list[dict] = []
-    per_source: dict[str, int] = {}
-
-    if "github" in sources:
-        gh_items = collect_github(rt.config, max_repos=args.get("github_max_repos"))
-        collected.extend(gh_items)
-        per_source["github"] = len(gh_items)
-
-    if "youtube" in sources:
-        yt_items = collect_youtube(
-            rt.config,
-            focus=args.get("focus", ""),
-            max_total=args.get("youtube_max_total"),
-        )
-        collected.extend(yt_items)
-        per_source["youtube"] = len(yt_items)
-
-    if "rss" in sources:
-        rss_items = collect_rss(rt.config, max_total=args.get("rss_max_total"))
-        collected.extend(rss_items)
-        per_source["rss"] = len(rss_items)
-
-    deduped = _merge_items([], collected)
-    if args.get("replace_state", True):
-        rt.state["raw_items"] = deduped
-    else:
-        rt.state["raw_items"] = _merge_items(rt.state.get("raw_items", []), deduped)
-
-    return {
-        "sources": sources,
-        "per_source": per_source,
-        "fetched_count": len(deduped),
-        "raw_items_total": len(rt.state["raw_items"]),
-        "sample_titles": _compact_news_preview(deduped),
-    }
 
 
 def _tool_summarize_news(args: dict[str, Any], rt: ToolRuntime) -> dict[str, Any]:
@@ -324,7 +277,11 @@ def build_agent_tools() -> dict[str, ToolSpec]:
     tools: list[ToolSpec] = [
         ToolSpec(
             name="collect_github",
-            description="Collect GitHub Trending repositories.",
+            description=(
+                "从 GitHub Trending 抓取热门仓库，结果追加到 state.raw_items。"
+                "收集数据时按需调用此工具（可与 collect_rss、collect_youtube 并列使用）。"
+                "参数：since 控制时间范围（daily/weekly/monthly），languages 过滤编程语言。"
+            ),
             side_effect=False,
             input_schema={
                 "type": "object",
@@ -336,7 +293,6 @@ def build_agent_tools() -> dict[str, ToolSpec]:
                         "items": {"type": "string"},
                         "maxItems": 20,
                     },
-                    "replace_state": {"type": "boolean", "default": False},
                 },
                 "additionalProperties": False,
             },
@@ -344,14 +300,17 @@ def build_agent_tools() -> dict[str, ToolSpec]:
         ),
         ToolSpec(
             name="collect_rss",
-            description="Collect items from configured RSS feeds.",
+            description=(
+                "从 config.yaml 中配置的 RSS 订阅源抓取文章，结果追加到 state.raw_items。"
+                "参数：days_back 控制向前追溯天数（默认按配置），max_total 限制总条数。"
+                "调用前无需其他工具，可与 collect_github、collect_youtube 并列使用。"
+            ),
             side_effect=False,
             input_schema={
                 "type": "object",
                 "properties": {
                     "max_total": {"type": "integer", "minimum": 1, "maximum": 500},
                     "days_back": {"type": "integer", "minimum": 1, "maximum": 30},
-                    "replace_state": {"type": "boolean", "default": False},
                 },
                 "additionalProperties": False,
             },
@@ -359,46 +318,31 @@ def build_agent_tools() -> dict[str, ToolSpec]:
         ),
         ToolSpec(
             name="collect_youtube",
-            description="Collect YouTube videos from subscribed channels and keyword search.",
+            description=(
+                "从 YouTube 订阅频道和关键词搜索抓取视频，结果追加到 state.raw_items。"
+                "参数：focus 为关键词/主题描述（影响搜索质量），max_total 限制总条数。"
+                "调用前无需其他工具，可与 collect_github、collect_rss 并列使用。"
+            ),
             side_effect=False,
             input_schema={
                 "type": "object",
                 "properties": {
                     "focus": {"type": "string"},
                     "max_total": {"type": "integer", "minimum": 1, "maximum": 200},
-                    "replace_state": {"type": "boolean", "default": False},
                 },
                 "additionalProperties": False,
             },
             handler=_tool_collect_youtube,
         ),
         ToolSpec(
-            name="collect_all_news",
-            description="Collect multi-source news in one call and save into state.raw_items.",
-            side_effect=False,
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "sources": {
-                        "type": "array",
-                        "items": {"type": "string", "enum": ["github", "youtube", "rss"]},
-                        "minItems": 1,
-                        "maxItems": 3,
-                        "default": ["github", "youtube", "rss"],
-                    },
-                    "focus": {"type": "string", "default": ""},
-                    "github_max_repos": {"type": "integer", "minimum": 1, "maximum": 100},
-                    "youtube_max_total": {"type": "integer", "minimum": 1, "maximum": 200},
-                    "rss_max_total": {"type": "integer", "minimum": 1, "maximum": 500},
-                    "replace_state": {"type": "boolean", "default": True},
-                },
-                "additionalProperties": False,
-            },
-            handler=_tool_collect_all_news,
-        ),
-        ToolSpec(
             name="summarize_news",
-            description="Run two-stage AI summarization on state.raw_items.",
+            description=(
+                "对 state.raw_items 中的原始数据进行两阶段 AI 筛选和评分，"
+                "输出高质量的 state.news_items 列表，并生成 state.digest_summary 摘要。"
+                "前置条件：至少调用过一次 collect_* 工具，state.raw_items 不为空。"
+                "参数：focus 影响筛选偏好，min_score 过滤低分内容（1-10，默认按配置）。"
+                "这一步耗时较长，每次日报只需调用一次。"
+            ),
             side_effect=False,
             input_schema={
                 "type": "object",
@@ -412,7 +356,11 @@ def build_agent_tools() -> dict[str, ToolSpec]:
         ),
         ToolSpec(
             name="read_today_schedule",
-            description="Parse today's schedule from config/personal/schedule.md.",
+            description=(
+                "用 AI 解析 config/personal/schedule.md，提取今日日程条目，"
+                "写入 state.schedule_entries。无需参数，直接调用即可。"
+                "适用于日报中包含「今日日程」板块时。"
+            ),
             side_effect=False,
             input_schema={
                 "type": "object",
@@ -423,7 +371,11 @@ def build_agent_tools() -> dict[str, ToolSpec]:
         ),
         ToolSpec(
             name="read_active_projects",
-            description="Parse active projects/todos from config/personal/projects.md.",
+            description=(
+                "用 AI 解析 config/personal/projects.md，提取活跃项目和近期待办，"
+                "写入 state.projects。适用于日报中包含「待办/项目」板块时。"
+                "参数：lookahead_days 控制截止日期向前预警天数（默认按配置）。"
+            ),
             side_effect=False,
             input_schema={
                 "type": "object",
@@ -436,7 +388,13 @@ def build_agent_tools() -> dict[str, ToolSpec]:
         ),
         ToolSpec(
             name="build_digest_payload",
-            description="Build notification payload from current session state.",
+            description=(
+                "将当前 session state（news_items、schedule_entries、projects、digest_summary）"
+                "组装成通知 payload，写入 state.payload。"
+                "前置条件：已完成所有需要的数据收集和摘要步骤。"
+                "必须显式传入 schedule_name 和 subject_prefix（从任务描述中获取）。"
+                "此工具是 dispatch_notifications 的前置步骤。"
+            ),
             side_effect=False,
             input_schema={
                 "type": "object",
@@ -452,7 +410,12 @@ def build_agent_tools() -> dict[str, ToolSpec]:
         ),
         ToolSpec(
             name="dispatch_notifications",
-            description="Dispatch payload to enabled channels (email/feishu/wework).",
+            description=(
+                "将 state.payload 发送到已启用的通知渠道（邮件/飞书/企业微信）。"
+                "前置条件：必须先调用 build_digest_payload。"
+                "这是有副作用的工具，仅在策略允许时可用（正式推送模式）。"
+                "dry-run 模式下此工具会跳过真实发送。"
+            ),
             side_effect=True,
             input_schema={
                 "type": "object",

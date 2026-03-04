@@ -2,12 +2,12 @@
 
 # SignalNest 📡
 
-A self-hosted personal AI digest system — scheduled aggregation from GitHub Trending / YouTube / RSS, two-stage AI filtering and summarization, delivered via Email / Feishu / WeCom.
+A self-hosted personal AI digest system — scheduled aggregation from GitHub Trending / YouTube / RSS, AI filtering and summarization, delivered via Email / Feishu / WeCom.
 
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](#-quick-start)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](#)
 [![Scheduler](https://img.shields.io/badge/Scheduler-supercronic-orange?style=flat-square)](https://github.com/aptible/supercronic)
-[![Mode](https://img.shields.io/badge/Executor-agent%20(default)-00A86B?style=flat-square)](#-agent-mode)
+[![Mode](https://img.shields.io/badge/Executor-agent-00A86B?style=flat-square)](#-agent-mode)
 
 **[中文](README.md)** | **[English](README-EN.md)**
 
@@ -31,15 +31,16 @@ A self-hosted personal AI digest system — scheduled aggregation from GitHub Tr
 ## ✨ Key Features
 
 - Multi-source ingestion: compose `github` / `youtube` / `rss` per schedule.
-- Two-stage AI pipeline: batch title filtering first, then per-item scoring and summaries.
+- AI processing pipeline: batch title filtering → per-item scoring and summaries → daily digest generation.
 - History deduplication: inject recent 7-day titles from `data/history/` to reduce repeats.
 - Per-source minimums: `ai.min_items_per_source` (default GitHub>=5, YouTube>=2).
 - Dual-track YouTube: subscribed channels + optional keyword search derived from `focus`.
+- User persona injection: reads `config/personal/user.md` and injects user background and preferences into the Agent system prompt.
 - Personal assistant blocks: parse `config/personal/schedule.md` and `projects.md`, with optional per-recipient files `schedule-<name>.md` / `projects-<name>.md`.
-- Preference learning: `user_score` in `data/last_digest.json` is persisted into `feedback.db`.
+- Preference learning: `user_score` in `data/last_digest.json` is persisted into `feedback.db` as personalized few-shot examples.
 - Multi-channel delivery: HTML email + Feishu webhook + WeCom webhook.
 - Privacy split: `EMAIL_FROM` keeps default personal blocks; other recipients get personal blocks only when matching named files exist, otherwise news-only.
-- Agent-only execution path: local agent scheduling is the only runtime flow.
+- Interactive query: `--query` mode lets you ask the Agent questions without triggering real notifications.
 
 ## 🏗️ Architecture Overview
 
@@ -80,6 +81,11 @@ Common optional fields:
 
 ```bash
 cd ..
+
+# User profile: injected into Agent system prompt (influences filtering and summary style)
+# config/personal/user.md already exists — edit as needed
+
+# Schedule and todos
 cp config/personal/schedule_example.md config/personal/schedule.md
 cp config/personal/projects_example.md config/personal/projects.md
 
@@ -88,7 +94,9 @@ cp config/personal/schedule_example.md config/personal/schedule-yy.md
 cp config/personal/projects_example.md config/personal/projects-yy.md
 ```
 
-`schedule.md` and `projects.md` can be free-form Markdown. Structure extraction is handled by AI.  
+`user.md` can be free-form Markdown describing your identity, interests, and content preferences. The Agent uses it as personalization context.
+
+`schedule.md` and `projects.md` can be free-form Markdown. Structure extraction is handled by AI.
 If `EMAIL_TO` includes `yy:foo@example.com`, the system will try `schedule-yy.md` and `projects-yy.md` and include whichever personal blocks are available in yy's email.
 
 ### 3) Configure schedules
@@ -146,11 +154,20 @@ cp docker/.env.example .env
 
 For local runs, `src/config_loader.py` reads repository-root `.env` (not `docker/.env`).
 
-### Agent-only flow
+### Schedule mode
 
 ```bash
 python -m src.main --schedule-name "Morning Digest" --dry-run
 python -m src.main --schedule-name "Morning Digest"
+```
+
+### Interactive query mode
+
+Ask the Agent a question without triggering notifications:
+
+```bash
+python -m src.main --query "What are the latest LLM open-source projects?"
+python -m src.main --query "What is trending on GitHub today?"
 ```
 
 ## ⚙️ Configuration
@@ -191,18 +208,17 @@ Environment variables override `config.yaml`:
 - `RUN_MODE=cron` (default): parse `config.yaml`, generate crontab, keep running with supercronic.
 - `RUN_MODE=once`: execute one schedule and exit.
 
-Scheduler command is fixed to: `python -m src.main --schedule-name <name>` (agent-only).
+Scheduler command is fixed to: `python -m src.main --schedule-name <name>`.
 
 ## 🤖 Agent Mode
 
-Agent core lives in `src/agent/`, following “LLM planning -> tool calls -> state persistence”.
+Agent core lives in `src/agent/`, following "LLM planning -> tool calls -> state persistence".
 
 ### Built-in tools
 
 - `collect_github`
 - `collect_rss`
 - `collect_youtube`
-- `collect_all_news`
 - `summarize_news`
 - `read_today_schedule`
 - `read_active_projects`
@@ -216,7 +232,7 @@ Agent core lives in `src/agent/`, following “LLM planning -> tool calls -> sta
 - Schedule side-effect switch: `agent.schedule_allow_side_effects` (controls real sends in `--schedule-name`)
 - Context lookback window: `agent.recent_turns_context_limit` (inject last N turns into planner prompt)
 - Session DB: `data/agent_sessions.db`
-- Scheduled runs are always persisted (fixed behavior, no user-facing toggle)
+- Scheduled runs are always persisted (fixed behavior)
 - Config convergence: agent runtime parameters are centralized in `config.agent` with strict startup validation
 
 ## 🗂️ Data & Preference Learning
@@ -263,7 +279,7 @@ Check:
 ## 🔐 Security Notes
 
 - Never commit `docker/.env` or repository-root `.env`.
-- `config/personal/schedule.md`, `projects.md`, and `schedule-*.md` / `projects-*.md` may contain private data and should remain local.
+- Files under `config/personal/` (`user.md`, `schedule.md`, `projects.md`, `schedule-*.md`, `projects-*.md`) may contain private data and should remain local.
 - Rotate keys/passwords immediately if leaked.
 
 ## 📚 Credits
@@ -272,4 +288,3 @@ Inspired by:
 
 - [TrendRadar](https://github.com/sansan0/TrendRadar)
 - [obsidian-daily-digest](https://github.com/Lantern567/obsidian-daily-digest)
-
