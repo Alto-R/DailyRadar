@@ -6,7 +6,6 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
-config/personal/schedule.md
-config/personal/projects.md
-config/personal/user.md
+config/personal/*
+!config/personal/*_example.md
 .claude
